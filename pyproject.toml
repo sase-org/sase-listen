@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sase-listen"
-version = "0.0.0"
+version = "0.1.0"
 description = "Turn Markdown into chaptered, loudness-normalized MP3 audio editions for the commute"
 readme = "README.md"
 requires-python = ">=3.12"
