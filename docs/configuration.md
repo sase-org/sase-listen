@@ -22,9 +22,6 @@ failures name the missing source, never the value. `sase-listen doctor`
 checks credential presence offline today; the cli phase adds a
 `--online` one-word synth check that proves the key works.
 
-(Further sections — paths, audio, cache — land with their owner
-phases. Scaffold placeholder below.)
-
 ## Feed
 
 ```yaml
@@ -50,3 +47,54 @@ the secret token path form the subscribe URL
 appears in logs or `config` output. `source_url_templates` maps a
 `kind:path` ref prefix to the report link shown in each feed item. See
 [podcast-feed](podcast-feed.md) for serving and AntennaPod setup.
+
+## Paths
+
+All locations follow XDG, overridable per variable:
+
+| Purpose  | Default                                  | Override             |
+| -------- | ---------------------------------------- | -------------------- |
+| Config   | `~/.config/sase-listen/config.yml`       | `$SASE_LISTEN_CONFIG`|
+| Library  | `$XDG_DATA_HOME/sase-listen/library`     | `$XDG_DATA_HOME`     |
+| Feed     | `$XDG_DATA_HOME/sase-listen/feed`        | `feed.dir`           |
+| Cache    | `$XDG_CACHE_HOME/sase-listen/chunks`     | `$XDG_CACHE_HOME`    |
+| State    | `$XDG_STATE_HOME/sase-listen`            | `$XDG_STATE_HOME`    |
+
+## Audio
+
+Mastering and gap defaults (see [Reliability](reliability.md) for what they
+do):
+
+```yaml
+audio:
+  bitrate_kbps: 64
+  sample_rate: 24000
+  loudness_lufs: -16.0
+  true_peak_db: -1.5
+  chunk_gap_s: 0.5
+  chapter_gap_s: 1.2
+  intro_gap_s: 0.9
+```
+
+Spoken templates (placeholders `{title}`, `{kind_phrase}`, `{date_phrase}`):
+
+```yaml
+intro_template: 'This is an AI-narrated audio edition of {title}{kind_phrase}{date_phrase}.'
+outro_template: "That's the end of this audio edition of {title}."
+author: '' # ID3 artist / feed performer when set
+```
+
+## Cache
+
+```yaml
+cache:
+  max_gb: 2.0 # LRU bound enforced after each render commit
+```
+
+`SASE_LISTEN_CACHE_MAX_GB` overrides `max_gb`. Other useful environment
+overrides: `SASE_LISTEN_NARRATOR`, `SASE_LISTEN_AUTHOR`, `SASE_LISTEN_LEXICON`
+(custom lexicon file), `SASE_LISTEN_INTRO_TEMPLATE`,
+`SASE_LISTEN_OUTRO_TEMPLATE`, `SASE_LISTEN_GEMINI_API_KEY_COMMAND`,
+`SASE_LISTEN_OPENAI_API_KEY_COMMAND`, `SASE_LISTEN_FEED_BASE_URL`.
+Unknown config keys are errors with a did-you-mean hint — run
+`sase-listen config` to see the effective config and each value's origin.
