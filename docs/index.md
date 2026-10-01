@@ -15,6 +15,10 @@ heading becomes an ID3 chapter and a synthesis boundary. The MP3 is mono,
 cover and a spoken AI-disclosure intro. Episodes reach your phone through
 Telegram's music player or a [private podcast feed](podcast-feed.md).
 
+Hear a sample (Charon voice, recorded during the apollo rollout):
+
+<audio controls src="assets/sample.mp3"></audio>
+
 Start with [Getting started](getting-started.md). To understand the pipeline,
 read [Architecture](architecture.md). For the why, read
 [Background](background.md). To contribute, read
