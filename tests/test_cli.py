@@ -41,8 +41,8 @@ def test_all_commands_registered() -> None:
 
 
 def test_stubs_exit_nonzero(capsys) -> None:  # type: ignore[no-untyped-def]
-    # render stays a pipeline-phase stub; lint/script/guide are implemented
-    # by the script phase (missing files are usage errors).
-    assert main(["render", "notes.md"]) == 1
+    # render is implemented by the pipeline phase; lint/script/guide are
+    # implemented by the script phase (missing files are usage errors).
+    assert main(["render", "notes.md"]) == 2
     assert main(["lint", "script.md"]) == 2
     assert main(["script", "notes.md"]) == 2

@@ -105,9 +105,7 @@ source = ["sase_listen"]
 branch = true
 
 [tool.coverage.report]
-# TODO(pipeline phase): raise fail_under to 90 and enforce it in CI.
-# Scaffold sets the floor to the current level; pipeline owns 90%+.
-fail_under = 50
+fail_under = 90
 show_missing = true
 skip_covered = false
 

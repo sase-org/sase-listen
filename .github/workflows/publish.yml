@@ -70,6 +70,20 @@ jobs:
         run: |
           /tmp/smoke-venv/bin/sase-listen --version
           /tmp/smoke-venv/bin/sase-listen doctor --json
+      - name: Render smoke episode with the tone engine
+        run: |
+          DEMO_MD="$(/tmp/smoke-venv/bin/python -c "import pathlib, sase_listen; print(pathlib.Path(sase_listen.__file__).parent / 'data' / 'demo.md')")"
+          /tmp/smoke-venv/bin/sase-listen render "$DEMO_MD" -n tone --json -o /tmp/smoke.mp3 > /tmp/smoke.json
+          /tmp/smoke-venv/bin/python - <<'EOF'
+          import json
+          from mutagen.id3 import ID3
+          payload = json.load(open("/tmp/smoke.json"))
+          assert payload["ok"], payload
+          assert len(payload["chapters"]) >= 2, payload
+          tag = ID3("/tmp/smoke.mp3")
+          assert sum(1 for k in tag if k.startswith("CHAP:")) == len(payload["chapters"])
+          print("smoke episode:", payload["episode_id"], payload["duration_s"])
+          EOF
 
   publish:
     needs: [release, build, install-smoke]

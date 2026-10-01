@@ -32,4 +32,32 @@ gets back a mastered MP3 path, `MasterStats`, and millisecond chapter marks.
   generated from the title hash (same title, same bytes). Supplied images
   are letterboxed over a blurred, darkened, scaled copy of themselves.
 
-Other subsystems are owned by their phases and documented here as they land.
+## Render orchestration (`src/sase_listen/pipeline.py`, `library.py`, `manifest.py`)
+
+`render` turns a narration script, plain Markdown (normalized
+deterministically, omissions kept), or a `kind:path` artifact ref (fetched
+through audited `sase artifact read`) into a library episode:
+
+```text
+load source → lint (6 unless --force) → plan chunks → synthesize → gates
+    → master → tag → episode gates → atomic commit
+```
+
+- **Planning:** the lexicon applies to all spoken text; the intro chunk
+  opens the first chapter and the outro closes the last, so ID3 chapters
+  match the script. Each chapter's first chunk starts with its spoken
+  heading; paragraphs pack greedily to the engine's `target_words` /
+  `max_chars`, splitting oversize paragraphs at sentence boundaries.
+  `--dry-run` stops here and prints the plan.
+- **Synthesis:** uncached chunks render in a thread pool sized to the engine
+  concurrency through `synthesize_with_retry`, each cached on completion.
+- **Mastering:** per-chapter PCM assembles through `audio/` with the
+  configured chunk/chapter gaps plus the wider `intro_gap_s` pause; cover
+  resolves from `--cover`, frontmatter, a sibling `<stem>_infographic.png`,
+  then the generated card.
+- **Commit:** `<slug>.mp3`, `manifest.json`, `script.md`, `cover.jpg`, and
+  Podcasting 2.0 `chapters.json` land in
+  `library/<slug>-<source-hash[:6]>/`; `-o PATH` copies the MP3 out and the
+  cache LRU is enforced. Progress flows through the `RenderEvents` protocol
+  (`plan`, `chunk started/finished/retried`, `stage`, `done`), which the cli
+  phase renders without touching the orchestration.

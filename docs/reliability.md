@@ -14,5 +14,27 @@
   mastering writes through a temp file plus atomic replace, so an
   interrupted render never leaves a half-written episode.
 
-Other reliability notes are owned by their phases and documented here as
-they land.
+## Render pipeline (`sase-listen render`)
+
+- **Chunk cache and resume:** every synthesized chunk is written to the
+  content-addressed LRU cache immediately, keyed on the post-lexicon text
+  plus engine coordinates. A killed render re-run pays only for missing
+  chunks; `--no-cache` bypasses the cache entirely.
+- **Quality gates:** each chunk is paced at words/duration. Hard failures
+  (empty PCM, pace outside 60–300 wpm, internal silence over 4 s)
+  re-synthesize with the cache bypassed up to twice, then exit 5 with a
+  per-chunk report. Soft failures (pace outside 90–240, or outside
+  0.65–1.5× the episode median with 3+ chunks) re-synthesize once, then
+  warn and keep the attempt closest to 150 wpm. Episode gates re-check the
+  mastered MP3: it must decode, match the assembled duration within
+  ±(1 s + 0.5%), carry the script's chapters in order, and land within 1 LU
+  of the loudness target. Episodes over 45 MB warn (Telegram allows 50 MB).
+- **Manifest:** every episode commits `manifest.json` recording the source,
+  script, narrator, lexicon, per-chunk attempts and cache keys, chapters,
+  audio measurements, gate results, omissions, and cost estimate.
+- **Atomicity:** files stage under `library/.staging/<episode-id>/` and move
+  into place with atomic replaces, manifest last. An fcntl lock per episode
+  id rejects concurrent renders of the same episode instead of clobbering.
+- **Exit codes:** 0 ok, 1 unexpected, 2 usage, 3 config/credentials,
+  4 synthesis failed after retries, 5 quality gate failed, 6 structural lint
+  errors (`render` refuses unless `--force`).
