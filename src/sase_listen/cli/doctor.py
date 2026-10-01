@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import xml.etree.ElementTree as ET
 from typing import Any
 
 from sase_listen import __version__
-from sase_listen.config import load_config
-from sase_listen.errors import ExitCode
+from sase_listen.config import SaseListenConfig, load_config
+from sase_listen.errors import ExitCode, SaseListenError
+from sase_listen.feed import FEED_XML_NAME, feed_root, resolve_token
 from sase_listen.paths import cache_dir, config_path, data_dir, state_dir
 
 
@@ -117,8 +119,90 @@ def _run_checks(*, online: bool) -> tuple[list[dict[str, Any]], bool]:
             checks.append({"name": f"writable:{name}", "ok": False, "detail": str(exc)})
             ok = False
 
+    before = len(checks)
+    _feed_checks(cfg, checks)
+    ok = ok and all(item["ok"] for item in checks[before:])
     checks.append({"name": "version", "ok": True, "detail": __version__})
     return checks, ok
+
+
+def _feed_checks(cfg: SaseListenConfig | None, checks: list[dict[str, Any]]) -> None:
+    """Append the four feed checks (feed phase).
+
+    An untouched feed (no base_url, no token, nothing published) reports
+    ok with a "not configured" detail so Telegram-only users keep a green
+    doctor; a half-configured feed fails loudly instead.
+    """
+    if cfg is None:
+        for name in ("feed:dir", "feed:base_url", "feed:token", "feed:feed.xml"):
+            checks.append(
+                {"name": name, "ok": False, "detail": "skipped: config invalid"}
+            )
+        return
+    root = feed_root(cfg)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        checks.append({"name": "feed:dir", "ok": True, "detail": str(root)})
+    except Exception as exc:
+        checks.append({"name": "feed:dir", "ok": False, "detail": str(exc)})
+        return
+    touched = bool(
+        cfg.feed.base_url.strip()
+        or cfg.feed.token.strip()
+        or cfg.feed.token_command.strip()
+        or (root / FEED_XML_NAME).is_file()
+        or (root / "episodes").is_dir()
+    )
+    if not touched:
+        for name in ("feed:base_url", "feed:token", "feed:feed.xml"):
+            checks.append(
+                {
+                    "name": name,
+                    "ok": True,
+                    "detail": "feed not configured (feed init to enable)",
+                }
+            )
+        return
+    if cfg.feed.base_url.strip():
+        checks.append(
+            {
+                "name": "feed:base_url",
+                "ok": True,
+                "detail": cfg.feed.base_url.strip(),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "feed:base_url",
+                "ok": False,
+                "detail": "feed.base_url is empty (run feed init --base-url URL)",
+            }
+        )
+    try:
+        resolve_token(cfg)
+    except SaseListenError as exc:
+        checks.append({"name": "feed:token", "ok": False, "detail": str(exc)})
+    else:
+        checks.append({"name": "feed:token", "ok": True, "detail": "set"})
+    xml_path = root / FEED_XML_NAME
+    if not xml_path.is_file():
+        checks.append(
+            {
+                "name": "feed:feed.xml",
+                "ok": False,
+                "detail": "feed.xml not generated yet (publish an episode)",
+            }
+        )
+        return
+    try:
+        ET.parse(str(xml_path))
+    except ET.ParseError as exc:
+        checks.append(
+            {"name": "feed:feed.xml", "ok": False, "detail": f"unparsable: {exc}"}
+        )
+    else:
+        checks.append({"name": "feed:feed.xml", "ok": True, "detail": str(xml_path)})
 
 
 def add_parser(

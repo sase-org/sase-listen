@@ -61,6 +61,7 @@ from sase_listen.engines import (
 )
 from sase_listen.engines.tone import ToneEngine
 from sase_listen.errors import ExitCode, SaseListenError
+from sase_listen.feed import mark_manifest_published, publish_episode
 from sase_listen.lexicon import Lexicon, load_merged
 from sase_listen.library import (
     atomic_commit,
@@ -130,7 +131,9 @@ class RenderRequest:
     voice_override: str = ""
     cover: str = ""
     dry_run: bool = False
-    publish: bool = False
+    #: Tri-state: True from --publish, False from --no-publish, None when
+    #: neither flag is given (auto_publish then decides for research kinds).
+    publish: bool | None = None
     no_cache: bool = False
     force: bool = False
 
@@ -1530,10 +1533,22 @@ def render(
             shutil.copyfile(final_dir / mp3_name, tmp_out)
             shutil.move(str(tmp_out), str(out_path))
         prepared.cache.prune()
-    if request.publish:
-        warnings.append(
-            "Publishing is owned by the feed phase; the episode was left unpublished."
-        )
+    want_publish = (
+        request.publish
+        if request.publish is not None
+        else (cfg.feed.auto_publish and meta.kind == "research")
+    )
+    published = False
+    if want_publish:
+        try:
+            publish_episode(plan.episode_id, cfg, library=library_root)
+        except SaseListenError as exc:
+            if request.publish:
+                raise
+            warnings.append(f"Auto-publish skipped: {exc}")
+        else:
+            mark_manifest_published(plan.episode_id, library_root)
+            published = True
     result = RenderResult(
         episode_id=plan.episode_id,
         title=plan.title,
@@ -1555,7 +1570,7 @@ def render(
         retried_chunks=retried,
         loudness_lufs=round(stats.loudness_lufs, 2),
         cost_usd_estimate=round(cost, 6),
-        published=False,
+        published=published,
         warnings=warnings,
     )
     listener.on_done(result)

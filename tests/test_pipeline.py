@@ -508,7 +508,9 @@ def test_render_json_schema(isolated: Path, tmp_path: Path, capsys) -> None:
     assert Path(payload["audio_path"]).exists()
 
 
-def test_render_force_and_publish(isolated: Path, tmp_path: Path, capsys) -> None:
+def test_render_force_and_publish(
+    isolated: Path, tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = _write(tmp_path, "bad.md", BAD_SCRIPT)
     assert main(["render", source, "-n", "tone", "--json"]) == 6
     out = capsys.readouterr().out
@@ -521,6 +523,17 @@ def test_render_force_and_publish(isolated: Path, tmp_path: Path, capsys) -> Non
             "hint": payload["error"]["hint"],
         },
     }
+    # --publish is real since the feed phase: configure the feed first.
+    cfg_path = tmp_path / "feed-config.yml"
+    cfg_path.write_text(
+        "narrator: tone\n"
+        "feed:\n"
+        f"  dir: {tmp_path / 'feed'}\n"
+        "  base_url: https://example.com:8443\n"
+        "  token: pipeline-phase-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SASE_LISTEN_CONFIG", str(cfg_path))
     assert main(["render", source, "-n", "tone", "--force", "--publish"]) == 0
 
 
@@ -1024,5 +1037,16 @@ def test_entry_points() -> None:
     assert ui.GLYPH_OK == "\u2713"
     assert ui.GLYPH_AUDIO == "\u266a"
     assert cli_main([]) == 2
-    with pytest.raises(NotImplementedError):
-        feed.not_implemented()
+    # The feed phase implemented the module, replacing the scaffold stub.
+    assert not hasattr(feed, "not_implemented")
+    for name in (
+        "resolve_token",
+        "subscribe_url",
+        "init_feed",
+        "publish_episode",
+        "unpublish_episode",
+        "rebuild_feed",
+        "feed_status",
+        "build_feed_xml",
+    ):
+        assert callable(getattr(feed, name)), f"missing feed API {name}"

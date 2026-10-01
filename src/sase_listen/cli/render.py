@@ -131,7 +131,7 @@ def run(args: argparse.Namespace) -> int:
         voice_override=args.voice or "",
         cover=args.cover or "",
         dry_run=bool(args.dry_run),
-        publish=bool(args.publish),
+        publish=args.publish,
         no_cache=bool(args.no_cache),
         force=bool(args.force),
     )
