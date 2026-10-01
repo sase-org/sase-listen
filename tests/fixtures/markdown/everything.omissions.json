@@ -1,0 +1,42 @@
+[
+  {
+    "type": "large_table",
+    "detail": "7 rows x 5 columns",
+    "line": 44
+  },
+  {
+    "type": "fence",
+    "detail": "python block: print(\"fences are omitted\")",
+    "line": 54
+  },
+  {
+    "type": "mermaid",
+    "detail": "graph TD",
+    "line": 58
+  },
+  {
+    "type": "math",
+    "detail": "E=mc^2",
+    "line": 63
+  },
+  {
+    "type": "html_comment",
+    "detail": "<!-- an HTML comment for the renderer -->",
+    "line": 65
+  },
+  {
+    "type": "footnote",
+    "detail": "footnote",
+    "line": 67
+  },
+  {
+    "type": "sources_section",
+    "detail": "Sources",
+    "line": 71
+  },
+  {
+    "type": "footnote",
+    "detail": "footnote definition",
+    "line": 69
+  }
+]
