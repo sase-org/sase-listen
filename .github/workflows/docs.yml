@@ -1,0 +1,45 @@
+name: Docs
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+      - uses: extractions/setup-just@v2
+        with:
+          just-version: "1.58.0"
+          github-token: ${{ secrets.SASE_RELEASE_TOKEN || github.token }}
+      - name: Set up Python
+        run: |
+          uv python install 3.12
+          uv venv --python 3.12 .venv
+      - name: Install dependencies
+        run: just install
+      - name: Build docs
+        run: just docs-build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,3 @@
+This is the sase-listen audition sample. It costs nothing with the tone engine.
+Numbers like 42 and 3.14 stay exact. Say TUI as T-U-I and PyPI as pie-pee-eye.
+The winner shipped first; the runner-up followed by two points.

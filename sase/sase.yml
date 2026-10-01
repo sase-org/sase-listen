@@ -1,0 +1,22 @@
+# sase-listen project-owned named tools (see sase docs/tool.md, "Guarded recipes").
+
+tools:
+  check:
+    argv: [just, check]
+    description: Run the repository scoped check.
+    stages: none
+    inputs:
+      - Justfile
+      - pyproject.toml
+      - uv.lock
+    args: deny
+    fingerprint:
+      toolchain:
+        python: [.venv/bin/python, --version]
+        just: [just, --version]
+        sase-listen:
+          [
+            .venv/bin/python,
+            -c,
+            "from importlib.metadata import version; print(version('sase-listen'))",
+          ]

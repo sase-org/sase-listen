@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+            lint: true
+            docs: true
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+      - uses: extractions/setup-just@v2
+        with:
+          just-version: "1.58.0"
+          github-token: ${{ secrets.SASE_RELEASE_TOKEN || github.token }}
+      - name: Set up Python ${{ matrix.python-version }}
+        run: |
+          uv python install ${{ matrix.python-version }}
+          uv venv --python ${{ matrix.python-version }} .venv
+      - name: Install dependencies
+        run: just install
+      - name: Latest deps check (scheduled only)
+        if: ${{ github.event_name == 'schedule' }}
+        run: uv sync --upgrade --all-groups
+      - name: Lint
+        if: ${{ matrix.lint == true && github.event_name != 'schedule' }}
+        run: just lint
+      - name: Run tests
+        if: ${{ github.event_name != 'schedule' }}
+        run: just test
+      - name: Docs build
+        if: ${{ matrix.docs == true && github.event_name != 'schedule' }}
+        run: just docs-build
+      - name: Build and check package
+        if: ${{ matrix.lint == true && github.event_name != 'schedule' }}
+        run: |
+          uv build
+          uvx twine@latest check --strict dist/*

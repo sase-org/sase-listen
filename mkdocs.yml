@@ -1,0 +1,34 @@
+site_name: sase-listen
+site_url: https://sase-org.github.io/sase-listen/
+repo_url: https://github.com/sase-org/sase-listen
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Narration scripts: narration-scripts.md
+  - CLI: cli.md
+  - Configuration: configuration.md
+  - Narrators & voices: narrators.md
+  - Pronunciation: pronunciation.md
+  - Podcast feed: podcast-feed.md
+  - SASE integration: sase-integration.md
+  - Architecture: architecture.md
+  - Reliability: reliability.md
+  - Troubleshooting: troubleshooting.md
+  - Background: background.md
+  - Changelog: changelog.md
+strict: true

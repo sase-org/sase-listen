@@ -1,0 +1,84 @@
+"""Argparse registry with one module per command. Owner: scaffold phase."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from collections.abc import Sequence
+
+from sase_listen import __version__
+from sase_listen.cli import audition as audition_mod
+from sase_listen.cli import cache_cmd as cache_mod
+from sase_listen.cli import config_cmd as config_mod
+from sase_listen.cli import doctor as doctor_mod
+from sase_listen.cli import feed_cmd as feed_mod
+from sase_listen.cli import guide as guide_mod
+from sase_listen.cli import lint as lint_mod
+from sase_listen.cli import ls_cmd as ls_mod
+from sase_listen.cli import publish_cmd as publish_mod
+from sase_listen.cli import render as render_mod
+from sase_listen.cli import script_cmd as script_mod
+from sase_listen.errors import ExitCode
+
+_Formatter: type[argparse.HelpFormatter]
+try:
+    from rich_argparse import RichHelpFormatter as _RichImpl
+
+    _Formatter = _RichImpl
+except ImportError:  # pragma: no cover - fallback when rich-argparse is missing
+    _Formatter = argparse.HelpFormatter
+
+_COMMAND_MODULES = (
+    render_mod,
+    script_mod,
+    lint_mod,
+    guide_mod,
+    audition_mod,
+    ls_mod,
+    doctor_mod,
+    cache_mod,
+    config_mod,
+    feed_mod,
+    publish_mod,
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the top-level parser."""
+    parser = argparse.ArgumentParser(
+        prog="sase-listen",
+        description=(
+            "Turn Markdown into chaptered, loudness-normalized MP3 audio editions.\n"
+            "Render research reports for the commute, then listen in Telegram or a\n"
+            "private podcast feed."
+        ),
+        formatter_class=_Formatter,
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"sase-listen {__version__}"
+    )
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+    for mod in _COMMAND_MODULES:
+        mod.add_parser(sub)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point for the `sase-listen` console script."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return int(ExitCode.USAGE)
+    try:
+        func = getattr(args, "func", None)
+        if func is None:
+            parser.print_help()
+            return int(ExitCode.USAGE)
+        return int(func(args))
+    except BrokenPipeError:
+        return int(ExitCode.UNEXPECTED)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

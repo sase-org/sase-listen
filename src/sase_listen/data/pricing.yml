@@ -1,0 +1,17 @@
+# USD per audio minute with effective dates. Owner: engines phase.
+- model: gemini-3.8-flash-tts
+  entries:
+    - from: "2026-01-01"
+      usd_per_minute: 0.0135
+    - from: "2027-01-01"
+      usd_per_minute: 0.027
+- model: gemini-3.8-flash-lite-tts
+  entries:
+    - from: "2026-01-01"
+      usd_per_minute: 0.009
+    - from: "2027-01-01"
+      usd_per_minute: 0.018
+- model: gpt-4o-mini-tts-2025-12-15
+  entries:
+    - from: "2026-01-01"
+      usd_per_minute: 0.015

@@ -1,0 +1,115 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sase-listen"
+version = "0.0.0"
+description = "Turn Markdown into chaptered, loudness-normalized MP3 audio editions for the commute"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Bryan Bugyi" }]
+maintainers = [{ name = "Bryan Bugyi" }]
+keywords = ["text-to-speech", "tts", "markdown", "podcast", "audiobook", "gemini", "cli", "sase"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+dependencies = [
+    "rich>=13.0",
+    "rich-argparse>=1.0",
+    "PyYAML>=6.0",
+    "markdown-it-py>=3.0",
+    "mdit-py-plugins>=0.4",
+    "google-genai>=1.0",
+    "httpx>=0.27",
+    "mutagen>=1.47",
+    "imageio-ffmpeg>=0.5",
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "segno>=1.6",
+]
+
+[project.urls]
+Homepage = "https://sase-org.github.io/sase-listen/"
+Documentation = "https://sase-org.github.io/sase-listen/"
+Repository = "https://github.com/sase-org/sase-listen"
+Issues = "https://github.com/sase-org/sase-listen/issues"
+Changelog = "https://github.com/sase-org/sase-listen/blob/master/CHANGELOG.md"
+
+[project.scripts]
+sase-listen = "sase_listen.cli:main"
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "mypy",
+    "types-PyYAML",
+    "pytest",
+    "pytest-cov",
+    "codespell",
+    "build",
+    "twine",
+    "mkdocs-material>=9.7,<10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sase_listen"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "C4", "UP", "I", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+mypy_path = ["src"]
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["mutagen.*", "segno.*", "imageio_ffmpeg.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = [
+    "--import-mode=importlib",
+    "--strict-markers",
+    "--strict-config",
+    "-v",
+]
+markers = [
+    "live: marks tests that hit real network APIs (skipped without SASE_LISTEN_LIVE=1)",
+]
+
+[tool.coverage.run]
+source = ["sase_listen"]
+branch = true
+
+[tool.coverage.report]
+# TODO(pipeline phase): raise fail_under to 90 and enforce it in CI.
+# Scaffold sets the floor to the current level; pipeline owns 90%+.
+fail_under = 50
+show_missing = true
+skip_covered = false
+
+[tool.codespell]
+skip = ".venv,uv.lock,*.svg,*.mp3,node_modules"
