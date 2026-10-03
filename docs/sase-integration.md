@@ -12,10 +12,12 @@ Narrate any research report from inside a SASE session:
 1. The xprompt resolves the report (a `@research:` ref or the swarm lead's
    published file), preferring `<name>.md` and falling back to
    `<name>__final.md`.
-2. It runs `sase-listen guide --edition <edition>` and writes
-   `<stem>_narration.md` next to the report (`__final` stripped from the
-   stem), with `source`, `source_blob`, `date`, `kind: research`, and `cover`
-   when a `<stem>_infographic.png` exists.
+2. It runs `sase-listen guide --edition <edition>` (brief by default;
+   `full` and `brief` are the supported guide-backed authoring choices) and
+   writes `<stem>_narration.md` next to the report (`__final` stripped from
+   the stem), with `source`, `source_blob`, `date`, `kind: research`,
+   `edition` matching the selected edition, and `cover` when a
+   `<stem>_infographic.png` exists.
 3. It lints with `sase-listen lint <script> --source <report>` until clean,
    renders with `sase-listen render <script> --json`, and registers the MP3
    with `sase artifact create` so it rides the completion notification to
@@ -26,11 +28,14 @@ The narration companion (`<stem>_narration.md`) is excluded from the
 
 ## `research_swarm` audio stage (sase-research-artifacts)
 
-Pass `audio=true` (optionally `audio_model="@audio"`) to add an opt-in stage
-after the lead researcher — and after the linker when it runs, so the edition
-narrates the published report and can use the infographic as cover. The stage
-agent runs the same write → lint → render → register flow as `#research/audio`
-and reports duration, chapters, approximate cost, and feed publication.
+Pass `audio=true` (optionally `audio_model="@audio"`,
+`audio_edition="brief"` or `"full"`) to add an opt-in stage after the lead
+researcher — and after the linker when it runs, so the edition narrates the
+published report and can use the infographic as cover. The stage agent runs
+the same write → lint → render → register flow as `#research/audio` (brief
+by default) and reports duration, chapters, approximate cost, and feed
+publication. Edition selection affects newly authored narration, not whether
+audio is enabled.
 
 ## Telegram delivery (sase-telegram)
 

@@ -53,7 +53,7 @@ For a research report, hand-write the script following the packaged guide,
 lint it until clean, then render:
 
 ```bash
-sase-listen guide --edition full
+sase-listen guide   # brief edition by default; --edition full for full length
 sase-listen lint report_narration.md --source report.md
 sase-listen render report_narration.md -o episode.mp3
 ```

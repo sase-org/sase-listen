@@ -43,11 +43,12 @@ number-fidelity check: every number in the script must appear in the source.
 ## `guide` — print the authoring rules
 
 ```bash
-sase-listen guide [--edition {full,brief}]
+sase-listen guide [--edition {brief,full}]
 ```
 
-Prints the packaged rules hand-written scripts must follow. The rules ship in
-the package so they never drift from the code that enforces them.
+Prints the packaged rules hand-written scripts must follow (brief by
+default; pass `--edition full` for the full-length edition). The rules ship
+in the package so they never drift from the code that enforces them.
 
 ## `audition` — compare voices **(stub)**
 

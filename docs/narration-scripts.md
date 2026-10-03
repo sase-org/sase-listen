@@ -18,9 +18,9 @@ source: research:202609/admin_center_updates_tab_unification.md # optional
 source_blob: 3f9c2e1... # optional `git hash-object` of the source
 date: 2026-09-14 # optional source date, spoken in the intro
 kind: research # research | document (default: document)
-edition: full # full | brief | digest | verbatim
+edition: brief # full | brief | digest | verbatim
 producer: agent # agent | deterministic
-target_minutes: 15 # optional
+target_minutes: 4 # optional
 cover: one_updates_tab_infographic.png # optional, relative to the script file
 ---
 
@@ -86,8 +86,8 @@ structural errors, and cleans residue with warnings.
 `guide` prints the packaged rules agents write by:
 
 ```bash
-sase-listen guide --edition full
-sase-listen guide --edition brief
+sase-listen guide                  # brief by default
+sase-listen guide --edition full   # full-length edition
 ```
 
 The final step of every hand-written script is

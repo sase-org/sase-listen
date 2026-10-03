@@ -22,18 +22,23 @@ def add_parser(
     p = sub.add_parser("guide", help="Print the packaged authoring guide.")
     p.add_argument(
         "--edition",
-        default="full",
+        default="brief",
         choices=["full", "brief"],
-        help="Edition guide to print.",
+        help="Edition guide to print (default: brief).",
     )
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen guide --edition full"
+    p.epilog = "Example: sase-listen guide --edition brief"
     return p
 
 
-def render_guide(edition: str = "full") -> str:
+_EDITION_MINUTES = {"brief": "4", "full": "16"}
+
+
+def render_guide(edition: str = "brief") -> str:
     """Render the packaged guide for one edition."""
     text = (files("sase_listen") / "data" / "guide.md").read_text(encoding="utf-8")
+    text = text.replace("{{ edition }}", edition)
+    text = text.replace("{{ target_minutes }}", _EDITION_MINUTES.get(edition, "4"))
     if edition == "brief":
         text = re.sub(
             f"{re.escape(_FULL_BEGIN)}.*?{re.escape(_FULL_END)}",
