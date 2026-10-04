@@ -17,7 +17,9 @@ title: One Updates Tab # required; episode title (ID3 TIT2, feed item title)
 source: research:202609/admin_center_updates_tab_unification.md # optional
 source_blob: 3f9c2e1... # optional `git hash-object` of the source
 date: 2026-09-14 # optional source date, spoken in the intro
-kind: research # research | document (default: document)
+author: Ryan Lopopolo # optional article author
+site: OpenAI # optional article publication
+kind: research # research | document | article (default: document)
 edition: brief # full | brief | digest | verbatim
 producer: agent # agent | deterministic
 target_minutes: 4 # optional
@@ -31,6 +33,10 @@ Plain spoken prose. Paragraphs are separated by blank lines...
 
 Only `##` headings are allowed. Every `##` becomes an ID3 chapter and a
 synthesis boundary. Text before the first `##` is a structural error.
+
+Article scripts use `kind: article`, the canonical URL in `source`, and may
+include `author` and `site`. Those fields are read and written by the script
+parser and used in the spoken intro and generated cover. See [Web articles](web-articles.md).
 
 The renderer adds the spoken intro (AI disclosure) and outro, so scripts
 must not. Agent scripts are named `<stem>_narration.md`, where `<stem>` is

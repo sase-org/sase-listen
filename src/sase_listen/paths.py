@@ -67,6 +67,11 @@ def library_dir() -> Path:
     return data_dir() / "library"
 
 
+def sources_dir() -> Path:
+    """Return the cached web-source directory."""
+    return data_dir() / "sources"
+
+
 def feed_dir_default() -> Path:
     """Return the default feed dir (the only directory ever served)."""
     return data_dir() / "feed"

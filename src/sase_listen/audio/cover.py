@@ -103,7 +103,7 @@ def _to_jpeg(image: Image.Image) -> bytes:
 
 
 def generate_title_card(
-    title: str, kind: str = "document", date_text: str = ""
+    title: str, kind: str = "document", date_text: str = "", site: str = ""
 ) -> bytes:
     """Render the 1400x1400 generated cover: gradient, title, motif.
 
@@ -150,7 +150,12 @@ def generate_title_card(
     draw = ImageDraw.Draw(image)
     margin = 130
     max_width = COVER_SIZE - 2 * margin
-    label = "SASE RESEARCH · AUDIO EDITION" if kind == "research" else "AUDIO EDITION"
+    if kind == "research":
+        label = "SASE RESEARCH · AUDIO EDITION"
+    elif kind == "article":
+        label = f"{site.strip().upper() or 'ARTICLE'} · AUDIO EDITION"
+    else:
+        label = "AUDIO EDITION"
     label_font = _font(40, _SEMIBOLD)
     draw.text(
         (COVER_SIZE / 2, 300),
@@ -236,9 +241,10 @@ def resolve_cover(
     title: str,
     kind: str = "document",
     date_text: str = "",
+    site: str = "",
 ) -> bytes:
     """Supplied image (letterboxed) or the generated title card."""
     if supplied is None:
-        return generate_title_card(title, kind=kind, date_text=date_text)
+        return generate_title_card(title, kind=kind, date_text=date_text, site=site)
     data = supplied.read_bytes() if isinstance(supplied, Path) else supplied
     return letterbox_cover(data)

@@ -84,6 +84,8 @@ from sase_listen.script import (
     lint_text,
     parse_script_text,
 )
+from sase_listen.web.extract import normalize_url
+from sase_listen.web.store import AcquiredSource, acquire, save_verbatim_script
 
 #: Words per minute assumed for estimates and gate selection.
 TARGET_WPM = 150.0
@@ -114,8 +116,11 @@ _MONTHS = (
     "November",
     "December",
 )
-_DEFAULT_VERBATIM_INTRO = "This is an AI-narrated reading of {title}{date_phrase}."
+_DEFAULT_VERBATIM_INTRO = (
+    "This is an AI-narrated reading of {title}{kind_phrase}{date_phrase}."
+)
 _REF_RE = re.compile(r"^[A-Za-z_][\w+.\-]*:.+")
+_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*\n?", re.DOTALL)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
@@ -136,6 +141,9 @@ class RenderRequest:
     publish: bool | None = None
     no_cache: bool = False
     force: bool = False
+    edition: str | None = None
+    html: str = ""
+    refresh: bool = False
 
 
 @dataclass
@@ -243,6 +251,8 @@ class LoadedSource:
     source_key: str  # ref string or absolute path, for the episode id
     source_sha256: str  # sha256 of the raw source bytes or fetched text
     source_path: Path | None  # set for filesystem inputs
+    source_url: str = ""
+    source_meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -289,9 +299,23 @@ def build_intro_text(meta: ScriptMeta, template: str) -> str:
     edition = meta.edition
     title = meta.title
     raw_date = meta.date
-    kind_phrase = ", SASE research" if kind == "research" else ""
+    if kind == "article":
+        if meta.author.strip() and meta.site.strip():
+            kind_phrase = f", by {meta.author.strip()} at {meta.site.strip()}"
+        elif meta.author.strip():
+            kind_phrase = f", by {meta.author.strip()}"
+        elif meta.site.strip():
+            kind_phrase = f", from {meta.site.strip()}"
+        else:
+            kind_phrase = ""
+    else:
+        kind_phrase = ", SASE research" if kind == "research" else ""
     date_text = format_spoken_date(raw_date) if raw_date.strip() else ""
-    date_phrase = f" from {date_text}" if date_text else ""
+    date_phrase = (
+        f", published {date_text}"
+        if date_text and kind == "article"
+        else (f" from {date_text}" if date_text else "")
+    )
     effective = template
     if edition == "verbatim" and template == DEFAULT_INTRO_TEMPLATE:
         effective = _DEFAULT_VERBATIM_INTRO
@@ -324,7 +348,16 @@ def build_outro_text(meta: ScriptMeta, template: str) -> str:
 
 def looks_like_ref(source: str) -> bool:
     """Return True for a `kind:path` artifact ref (not an existing path)."""
-    return bool(_REF_RE.match(source)) and not Path(source).exists()
+    return (
+        not looks_like_url(source)
+        and bool(_REF_RE.match(source))
+        and not Path(source).exists()
+    )
+
+
+def looks_like_url(source: str) -> bool:
+    """Return True for an absolute http(s) URL."""
+    return bool(_URL_RE.match(source))
 
 
 def looks_like_script(text: str) -> bool:
@@ -375,13 +408,98 @@ def read_artifact_ref(ref: str) -> str:
     return proc.stdout
 
 
-def load_source(source: str) -> LoadedSource:
+def _article_script(acquired: AcquiredSource) -> tuple[str, list[Omission]]:
+    """Build or reuse the cached deterministic article narration script."""
+    source_text = acquired.markdown_path.read_text(encoding="utf-8")
+    script_text, omissions = normalize_markdown(
+        source_text, filename=f"{acquired.metadata.get('title', 'article')}.md"
+    )
+    source_sha = str(acquired.metadata.get("source_sha256", ""))
+    cached_sha = str(acquired.metadata.get("verbatim_source_sha256", ""))
+    if cached_sha == source_sha and acquired.verbatim_script_path.is_file():
+        cached_text = acquired.verbatim_script_path.read_text(encoding="utf-8")
+        cached_meta = parse_script_text(cached_text).meta
+        if (
+            cached_meta.title == acquired.metadata.get("title", "")
+            and cached_meta.source == acquired.metadata.get("canonical_url", "")
+            and cached_meta.date == acquired.metadata.get("date", "")
+            and cached_meta.author == acquired.metadata.get("author", "")
+            and cached_meta.site == acquired.metadata.get("site", "")
+        ):
+            return cached_text, omissions
+    script = parse_script_text(script_text)
+    script.meta.title = str(acquired.metadata.get("title", script.meta.title))
+    script.meta.source = str(acquired.metadata.get("canonical_url", ""))
+    script.meta.date = str(acquired.metadata.get("date", ""))
+    script.meta.author = str(acquired.metadata.get("author", ""))
+    script.meta.site = str(acquired.metadata.get("site", ""))
+    script.meta.kind = "article"
+    script.meta.edition = "verbatim"
+    script.meta.producer = "deterministic"
+    result = script.dumps()
+    save_verbatim_script(acquired, result)
+    return result, omissions
+
+
+def _read_article_metadata(path: Path, meta: ScriptMeta) -> dict[str, Any]:
+    """Read cached source metadata when an article script is rendered directly."""
+    source_meta: dict[str, Any] = {
+        "canonical_url": normalize_url(meta.source),
+        "title": meta.title,
+        "author": meta.author,
+        "site": meta.site,
+        "date": meta.date,
+        "fetched_at": "",
+    }
+    metadata_path = path.parent / "source.json"
+    if metadata_path.is_file():
+        try:
+            value = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(value, dict)
+                and value.get("canonical_url") == source_meta["canonical_url"]
+            ):
+                source_meta.update(value)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return source_meta
+
+
+def load_source(
+    source: str,
+    *,
+    edition: str | None = None,
+    html_file: str = "",
+    refresh: bool = False,
+) -> LoadedSource:
     """Resolve a render source to an exact narration script plus provenance."""
+    if looks_like_url(source):
+        if edition not in {None, "verbatim"}:
+            raise SaseListenError(
+                f"URL edition '{edition}' is not available yet.",
+                ExitCode.USAGE,
+                hint="This phase supports only --edition verbatim for URLs.",
+            )
+        acquired = acquire(source, html_file=html_file or None, refresh=refresh)
+        script_text, omissions = _article_script(acquired)
+        metadata = acquired.metadata
+        canonical = str(metadata.get("canonical_url", source))
+        return LoadedSource(
+            script_text=script_text,
+            script=parse_script_text(script_text),
+            omissions=omissions,
+            source_label=canonical,
+            source_key=f"url:{canonical}#verbatim",
+            source_sha256=str(metadata.get("source_sha256", "")),
+            source_path=acquired.verbatim_script_path,
+            source_url=canonical,
+            source_meta=dict(metadata),
+        )
     if looks_like_ref(source):
         text = read_artifact_ref(source)
         if looks_like_script(text):
             script_text = text
-            omissions: list[Omission] = []
+            omissions = []
         else:
             filename = source.split("/")[-1] or "episode.md"
             script_text, omissions = normalize_markdown(text, filename=filename)
@@ -399,7 +517,9 @@ def load_source(source: str) -> LoadedSource:
         raise SaseListenError(
             f"Source not found: {source}.",
             ExitCode.USAGE,
-            hint="Pass a narration script, a Markdown file, or a kind:path ref.",
+            hint=(
+                "Pass a narration script, Markdown file, kind:path ref, or http(s) URL."
+            ),
         )
     raw = path.read_text(encoding="utf-8")
     if looks_like_script(raw):
@@ -408,9 +528,30 @@ def load_source(source: str) -> LoadedSource:
     else:
         script_text, file_omissions = normalize_markdown(raw, filename=path.name)
     resolved = path.resolve()
+    script = parse_script_text(script_text)
+    if script.meta.kind == "article" and looks_like_url(script.meta.source):
+        canonical = normalize_url(script.meta.source)
+        metadata = _read_article_metadata(resolved, script.meta)
+        sibling_source = resolved.parent / "source.md"
+        source_sha = (
+            hashlib.sha256(sibling_source.read_bytes()).hexdigest()
+            if sibling_source.is_file()
+            else hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        return LoadedSource(
+            script_text=script_text,
+            script=script,
+            omissions=file_omissions,
+            source_label=canonical,
+            source_key=f"url:{canonical}#{script.meta.edition}",
+            source_sha256=source_sha,
+            source_path=resolved,
+            source_url=canonical,
+            source_meta=metadata,
+        )
     return LoadedSource(
         script_text=script_text,
-        script=parse_script_text(script_text),
+        script=script,
         omissions=file_omissions,
         source_label=str(resolved),
         source_key=str(resolved),
@@ -1051,14 +1192,26 @@ def resolve_cover_bytes(
                 )
             continue
         try:
-            return resolve_cover(candidate, title, kind=kind, date_text=date_text)
+            return resolve_cover(
+                candidate,
+                title,
+                kind=kind,
+                date_text=date_text,
+                site=loaded.script.meta.site,
+            )
         except ValueError as exc:
             raise SaseListenError(
                 f"Cover image could not be used ({candidate}): {exc}.",
                 ExitCode.USAGE,
                 hint="Use a readable PNG or JPEG image.",
             ) from exc
-    return resolve_cover(None, title, kind=kind, date_text=date_text)
+    return resolve_cover(
+        None,
+        title,
+        kind=kind,
+        date_text=date_text,
+        site=loaded.script.meta.site,
+    )
 
 
 def run_episode_gates(
@@ -1237,6 +1390,16 @@ def plan_request(
         use_cache=not request.no_cache,
     )
     plan.warnings = lint_warnings + residue_notes + plan.warnings
+    outline = loaded.source_meta.get("outline", {})
+    if (
+        isinstance(outline, dict)
+        and int(outline.get("found", 0) or 0) >= 3
+        and not outline.get("restored")
+        and bool(outline.get("missing"))
+    ):
+        plan.warnings.append(
+            "The page had at least three outline headings, but none were restored."
+        )
     return plan
 
 
@@ -1336,7 +1499,12 @@ def render(
     command's exit code on any failure.
     """
     listener = events if events is not None else RenderEvents()
-    loaded = load_source(request.source)
+    loaded = load_source(
+        request.source,
+        edition=request.edition,
+        html_file=request.html,
+        refresh=request.refresh,
+    )
     prepared = prepare(request, config=config, engine=engine, cache=cache)
     cfg = prepared.config
     plan = plan_request(request, prepared, loaded)
@@ -1416,7 +1584,7 @@ def render(
             staging,
             EpisodeMeta(
                 title=plan.title,
-                author=cfg.author,
+                author=meta.author or cfg.author,
                 date=meta.date,
                 description=f"AI-narrated audio edition of {plan.title}.",
                 episode_id=plan.episode_id,
@@ -1439,15 +1607,29 @@ def render(
         actual_cached = sum(1 for made in final if made.cached)
         actual_synthesized = len(final) - actual_cached
         cost = estimate(prepared.narrator.model, stats.duration_s)
+        source_payload: dict[str, Any]
+        if loaded.source_url:
+            source_payload = {
+                "url": loaded.source_url,
+                "sha256": loaded.source_sha256,
+                "title": str(loaded.source_meta.get("title", meta.title)),
+                "author": str(loaded.source_meta.get("author", meta.author)),
+                "site": str(loaded.source_meta.get("site", meta.site)),
+                "date": str(loaded.source_meta.get("date", meta.date)),
+                "fetched_at": str(loaded.source_meta.get("fetched_at", "")),
+                "script_path": str(loaded.source_path or ""),
+            }
+        else:
+            source_payload = {
+                ("ref" if loaded.source_path is None else "path"): loaded.source_label,
+                "sha256": loaded.source_sha256,
+                "blob": meta.source_blob,
+            }
         manifest_payload = build_manifest(
             episode_id=plan.episode_id,
             title=plan.title,
             version=__version__,
-            source={
-                ("ref" if loaded.source_path is None else "path"): loaded.source_label,
-                "sha256": loaded.source_sha256,
-                "blob": meta.source_blob,
-            },
+            source=source_payload,
             script={
                 "sha256": hashlib.sha256(
                     loaded.script_text.encode("utf-8")
@@ -1536,7 +1718,7 @@ def render(
     want_publish = (
         request.publish
         if request.publish is not None
-        else (cfg.feed.auto_publish and meta.kind == "research")
+        else (cfg.feed.auto_publish and meta.kind in {"research", "article"})
     )
     published = False
     if want_publish:

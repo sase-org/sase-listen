@@ -33,6 +33,8 @@ just check      # lint + test (guarded)
   overrides (`SASE_LISTEN_*`), unknown-key errors with did-you-mean, origin
   tracking, exit-code enum.
 - `src/sase_listen/script/`, `normalize/`, `lexicon.py` — script phase.
+- `src/sase_listen/web/` — local article fetching, extraction, outline repair,
+  and per-source storage.
 - `src/sase_listen/audio/` — audio phase (pure library, no engine/CLI knowledge).
 - `src/sase_listen/engines/`, `cache.py`, `pricing.py` — engines phase.
 - `src/sase_listen/pipeline.py`, `library.py`, `manifest.py` — pipeline phase.

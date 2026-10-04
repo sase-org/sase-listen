@@ -86,6 +86,8 @@ def _parse_meta(raw: str | None) -> ScriptMeta:
     meta.source = str(loaded.get("source", ""))
     meta.source_blob = str(loaded.get("source_blob", ""))
     meta.date = str(loaded.get("date", ""))
+    meta.author = str(loaded.get("author", ""))
+    meta.site = str(loaded.get("site", ""))
     kind = str(loaded.get("kind", "document") or "document")
     meta.kind = kind
     edition = str(loaded.get("edition", "verbatim") or "verbatim")

@@ -28,23 +28,47 @@ def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> argparse.ArgumentParser:
     """Register the render parser."""
-    p = sub.add_parser("render", help="Render Markdown into an MP3 episode.")
-    p.add_argument("source", help="Narration script, Markdown file, or kind:path ref.")
-    p.add_argument("-o", "--output", default="", help="Copy the MP3 to PATH.")
-    p.add_argument("-n", "--narrator", default="", help="Narrator profile name.")
-    p.add_argument("--voice", default="", help="Override the narrator voice.")
+    p = sub.add_parser("render", help="Render a source into an MP3 episode.")
+    p.add_argument(
+        "source",
+        help="Narration script, Markdown file, kind:path ref, or http(s) URL",
+    )
     p.add_argument("--cover", default="", help="Cover image path.")
     p.add_argument("--dry-run", action="store_true", help="Print the plan and stop.")
-    pub = p.add_mutually_exclusive_group()
-    pub.add_argument("--publish", dest="publish", action="store_true", default=None)
-    pub.add_argument("--no-publish", dest="publish", action="store_false")
-    p.add_argument("--no-cache", action="store_true", help="Bypass the chunk cache.")
+    p.add_argument(
+        "-e",
+        "--edition",
+        choices=("verbatim",),
+        default=None,
+        help="URL edition to render (currently: verbatim).",
+    )
     p.add_argument(
         "--force", action="store_true", help="Render despite structural lint errors."
     )
+    p.add_argument(
+        "-H",
+        "--html",
+        default="",
+        metavar="FILE",
+        help="Use saved browser HTML instead of fetching the URL.",
+    )
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
+    p.add_argument("-n", "--narrator", default="", help="Narrator profile name.")
+    p.add_argument("--no-cache", action="store_true", help="Bypass the chunk cache.")
+    pub = p.add_mutually_exclusive_group()
+    pub.add_argument("--no-publish", dest="publish", action="store_false")
+    p.add_argument("-o", "--output", default="", help="Copy the MP3 to PATH.")
+    pub.add_argument("--publish", dest="publish", action="store_true", default=None)
+    pub.set_defaults(publish=None)
+    p.add_argument(
+        "-r",
+        "--refresh",
+        action="store_true",
+        help="Fetch the URL again and replace the cached source.",
+    )
+    p.add_argument("--voice", default="", help="Override the narrator voice.")
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen render notes.md -o episode.mp3"
+    p.epilog = "Example: sase-listen render https://example.com/article -e verbatim"
     return p
 
 
@@ -134,6 +158,9 @@ def run(args: argparse.Namespace) -> int:
         publish=args.publish,
         no_cache=bool(args.no_cache),
         force=bool(args.force),
+        edition=args.edition,
+        html=args.html or "",
+        refresh=bool(args.refresh),
     )
     as_json = bool(args.json)
     events = None if as_json else _ProgressEvents()

@@ -12,24 +12,30 @@ lint errors (`render` refuses unless `--force`).
 
 ```bash
 sase-listen render SOURCE [-o OUT.mp3] [-n NARRATOR] [--voice VOICE]
-  [--cover IMG] [--dry-run] [--publish | --no-publish] [--no-cache]
-  [--force] [--json]
+  [--cover IMG] [--dry-run] [-e verbatim] [--html FILE] [--refresh]
+  [--publish | --no-publish] [--no-cache] [--force] [--json]
 ```
 
 `SOURCE` is a narration script, a plain Markdown file (normalized
 automatically), or a `kind:path` artifact ref (fetched through audited
-`sase artifact read`). `--dry-run` prints the chunk plan and stops.
+`sase artifact read`), or an http(s) article URL. URL rendering currently
+supports the deterministic `verbatim` edition. `--html FILE` uses saved browser
+HTML, and `--refresh` fetches the URL again. `--dry-run` prints the chunk plan
+and stops.
 `--publish` / `--no-publish` override the `feed.auto_publish` config.
 See [Reliability](reliability.md) for gates, cache, and manifests.
 
 ## `script` — normalize Markdown to a script
 
 ```bash
-sase-listen script notes.md [-o notes_narration.md] [--json]
+sase-listen script SOURCE [-o notes_narration.md] [-e verbatim]
+  [--html FILE] [--refresh] [--json]
 ```
 
 Produces an `edition: verbatim`, `producer: deterministic` script plus an
-omissions report. See [Narration scripts](narration-scripts.md).
+omissions report. `SOURCE` can be a Markdown file or an http(s) article URL.
+For URL behavior and cached source storage, see [Web articles](web-articles.md)
+and [Narration scripts](narration-scripts.md).
 
 ## `lint` — validate a script
 

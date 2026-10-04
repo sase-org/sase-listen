@@ -61,3 +61,13 @@ load source → lint (6 unless --force) → plan chunks → synthesize → gates
   cache LRU is enforced. Progress flows through the `RenderEvents` protocol
   (`plan`, `chunk started/finished/retried`, `stage`, `done`), which the cli
   phase renders without touching the orchestration.
+
+## Web articles (`src/sase_listen/web/`)
+
+`fetch.py` downloads public HTML locally with Chrome impersonation and rejects
+unsupported media, oversized pages, and detected bot challenges. `extract.py`
+uses Trafilatura for article text and metadata, then repairs omitted H2/H3
+headings by matching their following prose. `store.py` atomically retains the
+HTML, repaired Markdown, metadata, URL index, and cached verbatim script under
+the XDG data directory. The pipeline gives URL sources a canonical URL and
+edition identity, so rendering the stored script keeps the same episode id.

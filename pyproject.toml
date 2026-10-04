@@ -41,6 +41,9 @@ dependencies = [
     "numpy>=1.26",
     "Pillow>=10.0",
     "segno>=1.6",
+    "trafilatura>=2.0",
+    "curl_cffi>=0.10",
+    "lxml>=5",
 ]
 
 [project.urls]
@@ -84,7 +87,7 @@ mypy_path = ["src"]
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["mutagen.*", "segno.*", "imageio_ffmpeg.*"]
+module = ["lxml", "lxml.*", "mutagen.*", "segno.*", "imageio_ffmpeg.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

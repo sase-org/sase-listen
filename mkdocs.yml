@@ -20,6 +20,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Narration scripts: narration-scripts.md
+  - Web articles: web-articles.md
   - CLI: cli.md
   - Configuration: configuration.md
   - Narrators & voices: narrators.md

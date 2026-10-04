@@ -10,8 +10,9 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from sase_listen.errors import ExitCode
+from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.normalize import normalize_markdown
+from sase_listen.pipeline import load_source, looks_like_url
 from sase_listen.script import parse_script_text
 
 
@@ -19,17 +20,107 @@ def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> argparse.ArgumentParser:
     """Register the script parser."""
-    p = sub.add_parser("script", help="Convert Markdown to a narration script.")
-    p.add_argument("source", help="Markdown file to normalize.")
-    p.add_argument("-o", "--output", default="", help="Write the script to PATH.")
+    p = sub.add_parser("script", help="Create a deterministic narration script.")
+    p.add_argument("source", help="Markdown file or http(s) article URL to normalize.")
+    p.add_argument(
+        "-e",
+        "--edition",
+        choices=("verbatim",),
+        default=None,
+        help="URL edition to create (currently: verbatim).",
+    )
+    p.add_argument(
+        "-H",
+        "--html",
+        default="",
+        metavar="FILE",
+        help="Use saved browser HTML instead of fetching the URL.",
+    )
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
+    p.add_argument("-o", "--output", default="", help="Write the script to PATH.")
+    p.add_argument(
+        "-r",
+        "--refresh",
+        action="store_true",
+        help="Fetch the URL again and replace the cached source.",
+    )
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen script notes.md -o notes_narration.md"
+    p.epilog = "Example: sase-listen script https://example.com/article --json"
     return p
 
 
 def run(args: argparse.Namespace) -> int:
     """Normalize Markdown into an edition: verbatim narration script."""
+    if looks_like_url(args.source):
+        try:
+            loaded = load_source(
+                args.source,
+                edition=args.edition,
+                html_file=args.html or "",
+                refresh=bool(args.refresh),
+            )
+        except SaseListenError as exc:
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": int(exc.code),
+                                "message": str(exc),
+                                "hint": exc.hint,
+                            },
+                        }
+                    )
+                )
+            else:
+                print(f"sase-listen script: error: {exc}", file=sys.stderr)
+                if exc.hint:
+                    print(f"hint: {exc.hint}", file=sys.stderr)
+            return int(exc.code)
+        script_md = loaded.script_text
+        script = loaded.script
+        chapters = [
+            {"title": c.title, "words": c.words(), "paragraphs": len(c.paragraphs)}
+            for c in script.chapters
+        ]
+        output_path = str(args.output) if args.output else ""
+        if output_path:
+            Path(output_path).write_text(script_md, encoding="utf-8")
+        outline = loaded.source_meta.get("outline", {})
+        if not isinstance(outline, dict):
+            outline = {}
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "title": script.meta.title,
+                        "words": script.words(),
+                        "chapters": chapters,
+                        "omissions": [o.to_dict() for o in loaded.omissions],
+                        "output_path": output_path,
+                        "script": script_md,
+                        "source_dir": str(
+                            loaded.source_path.parent if loaded.source_path else ""
+                        ),
+                        "outline": {
+                            "found": outline.get("found", 0),
+                            "restored": outline.get("restored", []),
+                            "missing": outline.get("missing", []),
+                        },
+                    }
+                )
+            )
+            return int(ExitCode.OK)
+        if not output_path:
+            sys.stdout.write(script_md)
+            return int(ExitCode.OK)
+        Console().print(
+            f"[green]✓[/green] Wrote {output_path} ({script.words()} words)."
+        )
+        return int(ExitCode.OK)
+
     source_path = Path(args.source)
     if not source_path.exists():
         print(f"sase-listen script: file not found: {source_path}", file=sys.stderr)

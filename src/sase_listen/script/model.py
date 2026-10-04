@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-Kind = Literal["research", "document"]
+Kind = Literal["research", "document", "article"]
 Edition = Literal["full", "brief", "digest", "verbatim"]
 Producer = Literal["agent", "deterministic"]
 
-VALID_KINDS: tuple[str, ...] = ("research", "document")
+VALID_KINDS: tuple[str, ...] = ("research", "document", "article")
 VALID_EDITIONS: tuple[str, ...] = ("full", "brief", "digest", "verbatim")
 VALID_PRODUCERS: tuple[str, ...] = ("agent", "deterministic")
 
@@ -36,6 +36,8 @@ class ScriptMeta:
     source: str = ""
     source_blob: str = ""
     date: str = ""
+    author: str = ""
+    site: str = ""
     kind: str = "document"
     edition: str = "verbatim"
     producer: str = "deterministic"
@@ -85,6 +87,10 @@ class NarrationScript:
             mapping["source_blob"] = self.meta.source_blob
         if self.meta.date:
             mapping["date"] = self.meta.date
+        if self.meta.author:
+            mapping["author"] = self.meta.author
+        if self.meta.site:
+            mapping["site"] = self.meta.site
         mapping["kind"] = self.meta.kind
         mapping["edition"] = self.meta.edition
         mapping["producer"] = self.meta.producer

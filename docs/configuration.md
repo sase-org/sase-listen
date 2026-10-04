@@ -56,6 +56,7 @@ All locations follow XDG, overridable per variable:
 | -------- | ---------------------------------------- | -------------------- |
 | Config   | `~/.config/sase-listen/config.yml`       | `$SASE_LISTEN_CONFIG`|
 | Library  | `$XDG_DATA_HOME/sase-listen/library`     | `$XDG_DATA_HOME`     |
+| Sources  | `$XDG_DATA_HOME/sase-listen/sources`     | `$XDG_DATA_HOME`     |
 | Feed     | `$XDG_DATA_HOME/sase-listen/feed`        | `feed.dir`           |
 | Cache    | `$XDG_CACHE_HOME/sase-listen/chunks`     | `$XDG_CACHE_HOME`    |
 | State    | `$XDG_STATE_HOME/sase-listen`            | `$XDG_STATE_HOME`    |
