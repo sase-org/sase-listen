@@ -26,6 +26,7 @@ nav:
   - Narrators & voices: narrators.md
   - Pronunciation: pronunciation.md
   - Podcast feed: podcast-feed.md
+  - Multi-machine publish: multi-machine.md
   - SASE integration: sase-integration.md
   - Architecture: architecture.md
   - Reliability: reliability.md

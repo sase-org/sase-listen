@@ -112,6 +112,11 @@ class FeedConfig:
             "research": "https://github.com/sase-org/sase--research/blob/master/{path}"
         }
     )
+    #: Short hostname of the machine that owns the served feed dir.
+    #: Empty means this machine (existing configs keep local publish).
+    host: str = ""
+    #: SSH destinations tried in order. Empty means ``[host]``.
+    host_ssh: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -197,7 +202,20 @@ _FEED_KEYS = [
     "max_episodes",
     "auto_publish",
     "source_url_templates",
+    "host",
+    "host_ssh",
 ]
+
+
+def _coerce_host_ssh(value: Any) -> list[str]:
+    """Accept a YAML string or list for ``feed.host_ssh``."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise ValueError("Unknown config key 'feed.host_ssh': expected a string or list.")
 
 
 def _check_keys(mapping: dict[str, Any], allowed: list[str], where: str) -> None:
@@ -354,6 +372,10 @@ def load_config(path: Path | None = None) -> tuple[SaseListenConfig, dict[str, s
                 cfg.feed.source_url_templates = {
                     str(k): str(v) for k, v in value.items()
                 }
+            elif key == "host_ssh":
+                cfg.feed.host_ssh = _coerce_host_ssh(value)
+            elif key == "host":
+                cfg.feed.host = str(value).strip()
             else:
                 setattr(cfg.feed, key, value)
         origins["feed"] = "file"
@@ -394,6 +416,10 @@ def _apply_env_overrides(cfg: SaseListenConfig, origins: dict[str, str]) -> None
         origins["feed"] = "env"
     if "SASE_LISTEN_FEED_DIR" in env:
         cfg.feed.dir = env["SASE_LISTEN_FEED_DIR"]
+        origins["feed"] = "env"
+    if "SASE_LISTEN_FEED_HOST" in env:
+        # Empty value means "this machine".
+        cfg.feed.host = env["SASE_LISTEN_FEED_HOST"].strip()
         origins["feed"] = "env"
 
 
@@ -459,5 +485,7 @@ def masked_snapshot(cfg: SaseListenConfig) -> dict[str, Any]:
             "max_episodes": cfg.feed.max_episodes,
             "auto_publish": cfg.feed.auto_publish,
             "source_url_templates": cfg.feed.source_url_templates,
+            "host": cfg.feed.host,
+            "host_ssh": list(cfg.feed.host_ssh),
         },
     }

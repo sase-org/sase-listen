@@ -26,6 +26,8 @@ checks credential presence offline today; the cli phase adds a
 
 ```yaml
 feed:
+  host: apollo # empty = this machine serves the feed
+  host_ssh: [apollo, apollo-do] # tried in order; empty means [host]
   dir: ~/.local/share/sase-listen/feed # the only directory ever served
   base_url: https://<tailnet-name>:8443 # public base; :8443 reserves 443
   token: <secret> # or token_command, e.g. `pass show listen_feed_token`
@@ -46,7 +48,8 @@ the secret token path form the subscribe URL
 `token_command` (no shell, 15 s timeout, first output line), and never
 appears in logs or `config` output. `source_url_templates` maps a
 `kind:path` ref prefix to the report link shown in each feed item. See
-[podcast-feed](podcast-feed.md) for serving and AntennaPod setup.
+[podcast-feed](podcast-feed.md) for serving and AntennaPod setup, and
+[Multi-machine publish](multi-machine.md) for `host` / `host_ssh`.
 
 ## Paths
 
@@ -96,6 +99,7 @@ cache:
 overrides: `SASE_LISTEN_NARRATOR`, `SASE_LISTEN_AUTHOR`, `SASE_LISTEN_LEXICON`
 (custom lexicon file), `SASE_LISTEN_INTRO_TEMPLATE`,
 `SASE_LISTEN_OUTRO_TEMPLATE`, `SASE_LISTEN_GEMINI_API_KEY_COMMAND`,
-`SASE_LISTEN_OPENAI_API_KEY_COMMAND`, `SASE_LISTEN_FEED_BASE_URL`.
+`SASE_LISTEN_OPENAI_API_KEY_COMMAND`, `SASE_LISTEN_FEED_BASE_URL`,
+`SASE_LISTEN_FEED_HOST` (empty means this machine).
 Unknown config keys are errors with a did-you-mean hint — run
 `sase-listen config` to see the effective config and each value's origin.

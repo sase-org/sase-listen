@@ -1,9 +1,10 @@
-"""feed command: init, status, rebuild, and prune. Owner: feed phase."""
+"""feed command: init, status, rebuild, prune, and receive. Owner: feed-host phase."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
@@ -14,6 +15,14 @@ from sase_listen.feed import (
     print_qr,
     rebuild_feed,
 )
+from sase_listen.feedhost import (
+    MAX_RECEIVE_BYTES,
+    feed_role,
+    pending_publishes,
+    receive_episode,
+    refuse_if_misrouted,
+    run_remote,
+)
 
 
 def add_parser(
@@ -22,20 +31,33 @@ def add_parser(
     """Register the feed parser."""
     p = sub.add_parser("feed", help="Manage the private podcast feed.")
     p.add_argument(
-        "action", nargs="?", default="", choices=["", "init", "rebuild", "prune"]
+        "action",
+        nargs="?",
+        default="",
+        choices=["", "init", "prune", "rebuild", "receive"],
+        help="init, prune, rebuild, or receive (host-only transport).",
+    )
+    p.add_argument(
+        "episode_id",
+        nargs="?",
+        default="",
+        help="Episode id (required for feed receive).",
     )
     p.add_argument("--base-url", default="", help="Public base URL for feed init.")
-    p.add_argument("--qr", action="store_true", help="Print a terminal QR code.")
-    p.add_argument("--show-url", action="store_true", help="Show the unmasked URL.")
+    p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.add_argument(
         "--print",
         dest="print_only",
         action="store_true",
         help="Print config instead of writing.",
     )
-    p.add_argument("--json", action="store_true", help="Emit one JSON object.")
+    p.add_argument("--qr", action="store_true", help="Print a terminal QR code.")
+    p.add_argument("--show-url", action="store_true", help="Show the unmasked URL.")
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen feed init --base-url https://host:8443"
+    p.epilog = (
+        "Example: sase-listen feed init --base-url https://host:8443. "
+        "`feed receive` is the internal SSH transport endpoint."
+    )
     return p
 
 
@@ -46,18 +68,43 @@ def _error_payload(exc: SaseListenError) -> dict[str, object]:
     }
 
 
-def _run_init(args: argparse.Namespace) -> int:
+def _print_error(exc: SaseListenError, *, as_json: bool, prefix: str) -> int:
+    if as_json:
+        print(json.dumps(_error_payload(exc)))
+    else:
+        print(f"{prefix}: error: {exc}")
+        if exc.hint:
+            print(f"hint: {exc.hint}")
+    return int(exc.code)
+
+
+def _load_cfg(args: argparse.Namespace) -> SaseListenConfig | None:
+    try:
+        cfg, _ = load_config()
+    except ValueError as exc:
+        wrapped = SaseListenError(str(exc), ExitCode.CONFIG)
+        _print_error(wrapped, as_json=bool(args.json), prefix="sase-listen feed")
+        return None
+    return cfg
+
+
+def _run_init(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
     as_json = bool(args.json)
+    if feed_role(cfg) == "remote":
+        host = cfg.feed.host.strip()
+        return _print_error(
+            SaseListenError(
+                f"This machine publishes to feed host {host}; "
+                f"run `sase-listen feed init` on {host}.",
+                ExitCode.USAGE,
+            ),
+            as_json=as_json,
+            prefix="sase-listen feed init",
+        )
     try:
         info = init_feed(args.base_url or "", print_only=bool(args.print_only))
     except SaseListenError as exc:
-        if as_json:
-            print(json.dumps(_error_payload(exc)))
-        else:
-            print(f"sase-listen feed init: error: {exc}")
-            if exc.hint:
-                print(f"hint: {exc.hint}")
-        return int(exc.code)
+        return _print_error(exc, as_json=as_json, prefix="sase-listen feed init")
     if as_json:
         print(json.dumps({"ok": True, **info}))
         return int(ExitCode.OK)
@@ -74,27 +121,21 @@ def _run_init(args: argparse.Namespace) -> int:
     return int(ExitCode.OK)
 
 
-def _run_status(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
-    as_json = bool(args.json)
-    show = bool(args.show_url)
-    status = feed_status(cfg, show_url=show)
-    qr = ""
-    if args.qr:
-        try:
-            url = masked_subscribe_url(cfg, show=True)
-        except SaseListenError as exc:
-            if as_json:
-                print(json.dumps(_error_payload(exc)))
-            else:
-                print(f"sase-listen feed: error: {exc}")
-            return int(exc.code)
-        qr = print_qr(url)
-        if as_json:
-            status["qr"] = qr
-    if as_json:
-        print(json.dumps({"ok": True, **status}))
-        return int(ExitCode.OK)
-    if status["url"]:
+def _annotate_status(
+    status: dict[str, object], cfg: SaseListenConfig, via: str
+) -> None:
+    status.setdefault("via", via)
+    status["outbox_pending"] = len(pending_publishes())
+    if "host" not in status:
+        status["host"] = cfg.feed.host.strip()
+
+
+def _print_status(status: dict[str, object], *, qr: str) -> None:
+    host = str(status.get("host") or "")
+    via = str(status.get("via") or "local")
+    if host:
+        print(f"Host: {host} (via {via})")
+    if status.get("url"):
         print(f"URL: {status['url']}")
     else:
         print("Feed is not configured yet.")
@@ -102,13 +143,63 @@ def _run_status(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
     print(f"Episodes: {status['episodes']}  Size: {status['size_bytes']} bytes")
     print(f"Last build: {status['last_build'] or 'never'}")
     retention = status["retention"]
-    print(
-        f"Retention: {retention['retention_days']} days, "
-        f"max {retention['max_episodes']} episodes"
-    )
+    if isinstance(retention, dict):
+        print(
+            f"Retention: {retention['retention_days']} days, "
+            f"max {retention['max_episodes']} episodes"
+        )
     print(f"Feed dir (served-only): {status['feed_dir']}")
+    raw_pending = status.get("outbox_pending", 0)
+    pending = raw_pending if isinstance(raw_pending, int) else 0
+    print(f"Outbox: {pending} pending")
     if qr:
         print(qr)
+
+
+def _run_status(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
+    as_json = bool(args.json)
+    show = bool(args.show_url)
+    want_qr = bool(args.qr)
+    try:
+        refuse_if_misrouted(cfg)
+        via = "local"
+        qr_url = ""
+        if feed_role(cfg) == "remote":
+            remote_args = ["feed", "--json"]
+            if show or want_qr:
+                remote_args.append("--show-url")
+            status, dest = run_remote(cfg, remote_args)
+            via = dest
+            qr_url = str(status.get("url") or "")
+            if not show and qr_url and "/****/" not in qr_url:
+                parts = qr_url.split("/")
+                # https://host:8443/<token>/feed.xml -> mask the token segment.
+                if len(parts) >= 4:
+                    parts[-2] = "****"
+                    status["url"] = "/".join(parts)
+                    status["url_masked"] = True
+        else:
+            status = feed_status(cfg, show_url=show)
+            if want_qr:
+                qr_url = masked_subscribe_url(cfg, show=True)
+        _annotate_status(status, cfg, via)
+        qr = ""
+        if want_qr:
+            if not qr_url:
+                raise SaseListenError(
+                    "No feed URL is configured.",
+                    ExitCode.CONFIG,
+                    hint="Run `sase-listen feed init --base-url URL` first.",
+                )
+            qr = print_qr(qr_url)
+            if as_json:
+                status["qr"] = qr
+    except SaseListenError as exc:
+        return _print_error(exc, as_json=as_json, prefix="sase-listen feed")
+    if as_json:
+        print(json.dumps({"ok": True, **status}))
+        return int(ExitCode.OK)
+    _print_status(status, qr=qr)
     return int(ExitCode.OK)
 
 
@@ -117,15 +208,16 @@ def _run_rebuild(
 ) -> int:
     as_json = bool(args.json)
     try:
-        result = rebuild_feed(cfg)
-    except SaseListenError as exc:
-        if as_json:
-            print(json.dumps(_error_payload(exc)))
+        refuse_if_misrouted(cfg)
+        if feed_role(cfg) == "remote":
+            action = "prune" if prune_only else "rebuild"
+            result, dest = run_remote(cfg, ["feed", action, "--json"])
+            result["via"] = dest
+            result["host"] = cfg.feed.host.strip()
         else:
-            print(f"sase-listen feed: error: {exc}")
-            if exc.hint:
-                print(f"hint: {exc.hint}")
-        return int(exc.code)
+            result = rebuild_feed(cfg)
+    except SaseListenError as exc:
+        return _print_error(exc, as_json=as_json, prefix="sase-listen feed")
     episodes = result["episodes"]
     removed = result["removed"]
     if as_json:
@@ -139,23 +231,50 @@ def _run_rebuild(
     return int(ExitCode.OK)
 
 
+def _run_receive(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
+    as_json = bool(args.json)
+    episode_id = str(args.episode_id or "")
+    if not episode_id:
+        return _print_error(
+            SaseListenError(
+                "feed receive requires an episode id.",
+                ExitCode.USAGE,
+                hint="Usage: sase-listen feed receive EPISODE_ID --json",
+            ),
+            as_json=as_json,
+            prefix="sase-listen feed",
+        )
+    try:
+        refuse_if_misrouted(cfg)
+        if feed_role(cfg) != "local":
+            host = cfg.feed.host.strip()
+            raise SaseListenError(
+                f"this machine is not the feed host ({host}); fix feed.host",
+                ExitCode.CONFIG,
+            )
+        data = sys.stdin.buffer.read(MAX_RECEIVE_BYTES + 1)
+        if len(data) > MAX_RECEIVE_BYTES:
+            raise SaseListenError(
+                "episode archive exceeds 256 MiB.",
+                ExitCode.USAGE,
+            )
+        result = receive_episode(episode_id, data, cfg)
+    except SaseListenError as exc:
+        return _print_error(exc, as_json=True, prefix="sase-listen feed")
+    print(json.dumps({"ok": True, **{k: v for k, v in result.items() if k != "ok"}}))
+    return int(ExitCode.OK)
+
+
 def run(args: argparse.Namespace) -> int:
-    """Run feed init, rebuild, prune, or the default status view."""
+    """Run feed init, rebuild, prune, receive, or the default status view."""
+    cfg = _load_cfg(args)
+    if cfg is None:
+        return int(ExitCode.CONFIG)
     action = getattr(args, "action", "")
     if action == "init":
-        return _run_init(args)
-    try:
-        cfg, _ = load_config()
-    except ValueError as exc:
-        if getattr(args, "json", False):
-            print(
-                json.dumps(
-                    {"ok": False, "error": {"code": 3, "message": str(exc), "hint": ""}}
-                )
-            )
-        else:
-            print(f"sase-listen feed: error: {exc}")
-        return int(ExitCode.CONFIG)
+        return _run_init(args, cfg)
+    if action == "receive":
+        return _run_receive(args, cfg)
     if action in ("rebuild", "prune"):
         return _run_rebuild(args, cfg, prune_only=(action == "prune"))
     return _run_status(args, cfg)

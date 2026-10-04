@@ -500,6 +500,8 @@ def test_render_json_schema(isolated: Path, tmp_path: Path, capsys) -> None:
         "loudness_lufs",
         "cost_usd_estimate",
         "published",
+        "publish_queued",
+        "publish_host",
         "warnings",
     }
     assert set(payload["chunks"]) == {"total", "cached", "synthesized", "retried"}

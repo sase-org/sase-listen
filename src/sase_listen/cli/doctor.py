@@ -12,6 +12,7 @@ from sase_listen import __version__
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.feed import FEED_XML_NAME, feed_root, resolve_token
+from sase_listen.feedhost import feed_role, pending_publishes, run_remote
 from sase_listen.paths import cache_dir, config_path, data_dir, state_dir
 
 
@@ -126,6 +127,40 @@ def _run_checks(*, online: bool) -> tuple[list[dict[str, Any]], bool]:
     return checks, ok
 
 
+def _outbox_check(checks: list[dict[str, Any]]) -> None:
+    pending = pending_publishes()
+    if not pending:
+        return
+    checks.append(
+        {
+            "name": "feed:outbox",
+            "ok": True,
+            "detail": (f"{len(pending)} queued — run `sase-listen publish --pending`"),
+        }
+    )
+
+
+def _remote_host_check(cfg: SaseListenConfig, checks: list[dict[str, Any]]) -> None:
+    host = cfg.feed.host.strip()
+    try:
+        status, dest = run_remote(cfg, ["feed", "--json"])
+    except SaseListenError as exc:
+        checks.append({"name": "feed:host", "ok": False, "detail": str(exc)})
+        return
+    proto = int(status.get("receive_protocol") or 0)
+    configured = bool(status.get("configured"))
+    version = str(status.get("sase_listen_version") or "?")
+    episodes = status.get("episodes", 0)
+    detail = f"{host} via {dest} · sase-listen {version} · {episodes} episodes"
+    checks.append(
+        {
+            "name": "feed:host",
+            "ok": configured and proto >= 1,
+            "detail": detail,
+        }
+    )
+
+
 def _feed_checks(cfg: SaseListenConfig | None, checks: list[dict[str, Any]]) -> None:
     """Append the four feed checks (feed phase).
 
@@ -134,11 +169,22 @@ def _feed_checks(cfg: SaseListenConfig | None, checks: list[dict[str, Any]]) -> 
     doctor; a half-configured feed fails loudly instead.
     """
     if cfg is None:
-        for name in ("feed:dir", "feed:base_url", "feed:token", "feed:feed.xml"):
+        for name in (
+            "feed:host",
+            "feed:dir",
+            "feed:base_url",
+            "feed:token",
+            "feed:feed.xml",
+        ):
             checks.append(
                 {"name": name, "ok": False, "detail": "skipped: config invalid"}
             )
         return
+    _outbox_check(checks)
+    if feed_role(cfg) == "remote":
+        _remote_host_check(cfg, checks)
+        return
+    checks.append({"name": "feed:host", "ok": True, "detail": "this machine"})
     root = feed_root(cfg)
     try:
         root.mkdir(parents=True, exist_ok=True)

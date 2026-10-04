@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sase_listen.config import default_config, load_config
+from sase_listen.config import default_config, load_config, masked_snapshot
 
 
 def test_defaults_cover_shared_contracts() -> None:
@@ -45,6 +45,52 @@ def test_env_overrides_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     cfg, origins = load_config(p)
     assert cfg.narrator == "gemini"
     assert origins["narrator"] == "env"
+
+
+def test_feed_host_and_host_ssh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SASE_LISTEN_FEED_HOST", raising=False)
+    p = tmp_path / "config.yml"
+    p.write_text(
+        yaml.safe_dump(
+            {
+                "feed": {
+                    "host": "Apollo.example",
+                    "host_ssh": "apollo",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg, origins = load_config(p)
+    assert cfg.feed.host == "Apollo.example"
+    assert cfg.feed.host_ssh == ["apollo"]
+    assert origins["feed"] == "file"
+    snap = masked_snapshot(cfg)
+    assert snap["feed"]["host"] == "Apollo.example"
+    assert snap["feed"]["host_ssh"] == ["apollo"]
+
+    p.write_text(
+        yaml.safe_dump(
+            {"feed": {"host": "apollo", "host_ssh": ["apollo", "apollo-do"]}}
+        ),
+        encoding="utf-8",
+    )
+    cfg, _ = load_config(p)
+    assert cfg.feed.host_ssh == ["apollo", "apollo-do"]
+
+    monkeypatch.setenv("SASE_LISTEN_FEED_HOST", "")
+    cfg, origins = load_config(p)
+    assert cfg.feed.host == ""
+    assert origins["feed"] == "env"
+
+
+def test_feed_host_ssh_rejects_mapping(tmp_path: Path) -> None:
+    p = tmp_path / "config.yml"
+    p.write_text(yaml.safe_dump({"feed": {"host_ssh": {"a": "b"}}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="host_ssh"):
+        load_config(p)
 
 
 def test_origins_track_file_vs_default(

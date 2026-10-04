@@ -71,3 +71,21 @@ headings by matching their following prose. `store.py` atomically retains the
 HTML, repaired Markdown, metadata, URL index, and cached verbatim script under
 the XDG data directory. The pipeline gives URL sources a canonical URL and
 edition identity, so rendering the stored script keeps the same episode id.
+
+## Podcast feed (`src/sase_listen/feed.py`, `feedhost.py`)
+
+The served-only feed directory holds `feed.xml`, channel art, and
+published episode copies. `publish_episode` copies the library MP3,
+cover, chapters, and manifest in, then regenerates the RSS document
+under a re-entrant `fcntl` feed lock so concurrent publishes serialize
+instead of racing `feed.xml`.
+
+`feedhost.py` is the multi-machine path: `feed.host` empty or equal to
+this hostname is local; otherwise `publish_any` packs the episode dir
+as an uncompressed tar and streams it to `sase-listen feed receive` over
+SSH (`BatchMode`, `PATH=$HOME/.local/bin:$PATH`,
+`SASE_LISTEN_REMOTE_CALL=1` so the host never forwards again). The host
+validates members, `atomic_commit`s into its library, and publishes
+under the same lock. Failures land in `$XDG_STATE_HOME/sase-listen/outbox/`
+and retry with `publish --pending`. Remote JSON always masks the feed
+token. See [Multi-machine publish](multi-machine.md).

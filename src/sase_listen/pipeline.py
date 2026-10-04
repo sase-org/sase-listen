@@ -61,7 +61,8 @@ from sase_listen.engines import (
 )
 from sase_listen.engines.tone import ToneEngine
 from sase_listen.errors import ExitCode, SaseListenError
-from sase_listen.feed import mark_manifest_published, publish_episode
+from sase_listen.feed import mark_manifest_published
+from sase_listen.feedhost import PENDING_HINT, feed_role, publish_any, queue_publish
 from sase_listen.lexicon import Lexicon, load_merged
 from sase_listen.library import (
     atomic_commit,
@@ -215,6 +216,8 @@ class RenderResult:
     loudness_lufs: float = 0.0
     cost_usd_estimate: float = 0.0
     published: bool = False
+    publish_queued: bool = False
+    publish_host: str = ""
     warnings: list[str] = field(default_factory=list)
 
 
@@ -1471,6 +1474,8 @@ def result_to_json(result: RenderResult) -> dict[str, Any]:
         "loudness_lufs": round(result.loudness_lufs, 2),
         "cost_usd_estimate": round(result.cost_usd_estimate, 6),
         "published": result.published,
+        "publish_queued": result.publish_queued,
+        "publish_host": result.publish_host,
         "warnings": list(result.warnings),
     }
 
@@ -1721,16 +1726,36 @@ def render(
         else (cfg.feed.auto_publish and meta.kind in {"research", "article"})
     )
     published = False
+    publish_queued = False
+    publish_host = ""
     if want_publish:
         try:
-            publish_episode(plan.episode_id, cfg, library=library_root)
+            published_info = publish_any(plan.episode_id, cfg, library=library_root)
         except SaseListenError as exc:
-            if request.publish:
+            if feed_role(cfg) == "remote":
+                queue_publish(plan.episode_id, str(exc))
+                publish_queued = True
+                host = cfg.feed.host.strip()
+                if request.publish:
+                    if PENDING_HINT not in exc.hint:
+                        exc.hint = (
+                            f"{exc.hint} {PENDING_HINT}".strip()
+                            if exc.hint
+                            else PENDING_HINT
+                        )
+                    raise
+                warnings.append(
+                    f"Auto-publish to {host} failed ({exc}); queued — "
+                    "run `sase-listen publish --pending`"
+                )
+            elif request.publish:
                 raise
-            warnings.append(f"Auto-publish skipped: {exc}")
+            else:
+                warnings.append(f"Auto-publish skipped: {exc}")
         else:
             mark_manifest_published(plan.episode_id, library_root)
             published = True
+            publish_host = str(published_info.get("host") or "")
     result = RenderResult(
         episode_id=plan.episode_id,
         title=plan.title,
@@ -1753,6 +1778,8 @@ def render(
         loudness_lufs=round(stats.loudness_lufs, 2),
         cost_usd_estimate=round(cost, 6),
         published=published,
+        publish_queued=publish_queued,
+        publish_host=publish_host,
         warnings=warnings,
     )
     listener.on_done(result)

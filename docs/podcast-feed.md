@@ -2,7 +2,9 @@
 
 A private podcast feed for AntennaPod (or any podcast app that accepts a
 URL): publish an episode once, then new editions arrive on the phone
-over Tailscale Funnel.
+over tailnet-only Tailscale Serve. Render on any machine; the host is
+the only writer of `feed.xml`. See
+[Multi-machine publish](multi-machine.md).
 
 ## Quickstart
 
@@ -11,8 +13,8 @@ over Tailscale Funnel.
 #    served-only feed directory, and stores both in your config.
 sase-listen feed init --base-url https://<your-tailnet-name>:8443
 
-# 2. Serve the feed directory on the secret path (see below for why).
-tailscale funnel --bg --https=8443 --set-path=/<token> \
+# 2. Serve the feed directory on the secret path (tailnet only).
+tailscale serve --bg --https=8443 --set-path=/<token> \
   ~/.local/share/sase-listen/feed
 
 # 3. Publish episodes. The QR code goes straight into the phone camera.
@@ -20,24 +22,32 @@ sase-listen publish --latest
 sase-listen feed --qr
 ```
 
-The exact Funnel command and a terminal QR code are printed by
-`feed init`, so step 2 is copy-paste. If your config is managed by
+`feed init` still prints a Funnel command (the public-internet
+alternative) and a terminal QR code. The live setup uses tailnet-only
+`tailscale serve` so the phone reaches the host over Tailscale and
+nothing is on the public internet. If your config is managed by
 chezmoi, use `feed init --base-url URL --print` and paste the printed
 `feed:` snippet into your config file instead of writing it directly.
 
 ## Commands
 
 - `sase-listen feed` — status: the subscribe URL (masked unless
-  `--show-url`), episode count, size on disk, last build time, and the
-  retention policy. Add `--qr` for a scannable subscribe code.
+  `--show-url`), host and outbox, episode count, size on disk, last
+  build time, and the retention policy. Add `--qr` for a scannable
+  subscribe code. In remote mode this runs on the feed host.
 - `sase-listen feed init --base-url URL` — generate the token, create
-  the feed directory, and write the `feed:` config section.
+  the feed directory, and write the `feed:` config section. Refused on
+  a renderer that publishes to another host.
 - `sase-listen feed rebuild` — regenerate `feed.xml` and the channel
   art from what is published (also re-applies retention).
 - `sase-listen feed prune` — drop episodes outside retention and
   regenerate, without publishing anything new.
+- `sase-listen feed receive EPISODE_ID --json` — internal host-only
+  transport: import a packed episode from stdin and publish it.
 - `sase-listen publish EPISODE` — publish one episode, where `EPISODE`
-  is an episode id, an episode MP3 path, or `--latest`.
+  is an episode id, an episode MP3 path, `--latest`, or `--pending` to
+  flush the retry outbox. `--show-url` prints the unmasked item URL on
+  a local publish.
 - `sase-listen unpublish EPISODE` — remove an episode id from the feed
   and regenerate.
 - `sase-listen render SOURCE --publish` — render and publish in one
@@ -77,20 +87,22 @@ With `feed.auto_publish: true`, `render` publishes `kind: research`
 episodes automatically. Anything else (plain Markdown, `kind:
 document`) still needs an explicit `publish` or `--publish`.
 
-## Serving with Tailscale Funnel (and why `:8443`)
+## Serving with Tailscale Serve (and why `:8443`)
 
-Port 443 on the tailnet stays reserved for `sase_gateway`, so the feed
-is served on `:8443` instead:
+The live setup is **tailnet-only** `tailscale serve`. The phone is on
+the tailnet; nothing is exposed to the public internet. Port 443 stays
+reserved for `sase_gateway`, so the feed is served on `:8443`:
 
 ```bash
-tailscale funnel --bg --https=8443 --set-path=/<token> <feed-dir>
+tailscale serve --bg --https=8443 --set-path=/<token> <feed-dir>
 ```
 
-The tailnet policy needs the `funnel` node attribute for the serving
-machine. Funnel terminates TLS and serves the static files; the
-`--set-path` flag mounts the feed directory exactly at the secret token
-path, so the subscribe URL is
-`https://<tailnet-name>:8443/<token>/feed.xml`.
+`--set-path` mounts the feed directory at the secret token path, so the
+subscribe URL is `https://<tailnet-name>:8443/<token>/feed.xml`.
+
+**Funnel** (`tailscale funnel --bg --https=8443 --set-path=/<token>
+<feed-dir>`) is the public-internet alternative. It needs the `funnel`
+node attribute and puts the token-path URL on the public internet.
 
 Static-server alternative: any HTTPS static host works. Copy the feed
 directory to it preserving the `<token>/` prefix (or drop the prefix

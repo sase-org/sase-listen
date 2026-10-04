@@ -40,6 +40,7 @@ just check      # lint + test (guarded)
 - `src/sase_listen/pipeline.py`, `library.py`, `manifest.py` — pipeline phase.
 - `src/sase_listen/cli/` rich experience + `audition/ls/doctor/cache/config` — cli phase.
 - `src/sase_listen/feed.py` + feed/publish/unpublish — feed phase.
+- `src/sase_listen/feedhost.py` — SSH transport, receive, outbox (feed-host phase).
 - `src/sase_listen/ui.py` — one accent color, one glyph set.
 
 ## Parallel-phase rules

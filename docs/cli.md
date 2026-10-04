@@ -110,13 +110,17 @@ Secrets never appear. See [Configuration](configuration.md).
 ## `feed`, `publish`, `unpublish` — the podcast feed
 
 ```bash
-sase-listen feed [init|rebuild|prune] [--base-url URL] [--qr] [--show-url] [--print] [--json]
-sase-listen publish EPISODE|--latest [--json]
+sase-listen feed [init|prune|rebuild|receive] [--base-url URL] [--json]
+  [--print] [--qr] [--show-url]
+sase-listen publish EPISODE|--latest|--pending [--json] [--show-url]
 sase-listen unpublish EPISODE [--json]
 ```
 
-`EPISODE` is an episode id, an episode MP3 path, or `--latest`. See
-[Podcast feed](podcast-feed.md).
+`EPISODE` is an episode id, an episode MP3 path, or `--latest`.
+`--pending` flushes the retry outbox. `feed receive EPISODE_ID --json`
+is the internal host-only transport (stdin tar); do not call it by
+hand. See [Podcast feed](podcast-feed.md) and
+[Multi-machine publish](multi-machine.md).
 
 ## Non-TTY and `NO_COLOR` behavior
 

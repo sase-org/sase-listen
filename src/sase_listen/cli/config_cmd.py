@@ -36,6 +36,8 @@ audio:
 cache:
   max_gb: 2.0
 feed:
+  # host: apollo                 # empty = this machine serves the feed
+  # host_ssh: [apollo, apollo-do]
   title: SASE Listen
   auto_publish: false
   retention_days: 90

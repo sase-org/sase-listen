@@ -44,6 +44,32 @@ Expected: these three commands are known stubs. Episodes and their
 (usually `~/.local/share/sase-listen/`); inspect them directly until `ls`
 lands.
 
+## Feed host unreachable
+
+`publish` (and auto-publish) could not SSH to `feed.host`. Destinations
+in `feed.host_ssh` are tried in order; a move to the next one happens
+only on ssh exit 255, a missing `ssh` binary, or a timeout before any
+output. Confirm `ssh -o BatchMode=yes apollo true`, then retry with
+`sase-listen publish --pending`. The episode stays in the local outbox
+until that succeeds.
+
+## sase-listen on the host is too old to receive episodes
+
+The host does not have `feed receive` yet. Upgrade it first:
+
+```bash
+ssh apollo '~/.local/bin/uv tool install --force git+https://github.com/sase-org/sase-listen'
+```
+
+Then upgrade each renderer. See [Multi-machine publish](multi-machine.md).
+
+## this machine is not the feed host
+
+This process was invoked as a remote call (`SASE_LISTEN_REMOTE_CALL=1`)
+on a machine whose `feed.host` points elsewhere, or `feed receive` ran
+where `feed.host` is not this machine. Fix `feed.host` (empty means
+this machine) so the SSH destination is the host that serves the feed.
+
 ## Feed URL doesn't resolve
 
 Confirm `feed.base_url` uses `:8443` (port 443 stays reserved for

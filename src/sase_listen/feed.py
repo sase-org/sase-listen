@@ -9,6 +9,8 @@ library itself is never exposed.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import io
 import os
@@ -16,7 +18,11 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import threading
+import time
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import format_datetime
@@ -26,11 +32,12 @@ from xml.sax.saxutils import escape
 
 import yaml
 
+from sase_listen import __version__
 from sase_listen.audio.cover import generate_title_card
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.library import episode_path, list_episode_ids, read_manifest
-from sase_listen.paths import config_path, feed_dir_default, library_dir
+from sase_listen.paths import config_path, feed_dir_default, library_dir, locks_dir
 
 #: Timeout for the external `token_command`, matching the engines contract.
 TOKEN_COMMAND_TIMEOUT_S = 15
@@ -43,6 +50,11 @@ CHAPTERS_MIME = "application/json+chapters"
 EPISODES_SUBDIR = "episodes"
 FEED_XML_NAME = "feed.xml"
 CHANNEL_COVER_NAME = "cover.jpg"
+RECEIVE_PROTOCOL = 1
+FEED_LOCK_TIMEOUT_S = 120
+
+_feed_lock_state = threading.local()
+_feed_thread_lock = threading.Lock()
 
 
 @dataclass
@@ -122,12 +134,72 @@ def subscribe_url(cfg: SaseListenConfig) -> str:
     return f"{require_base_url(cfg)}/{resolve_token(cfg)}/{FEED_XML_NAME}"
 
 
+def mask_token_in_url(url: str, token: str) -> str:
+    """Replace the feed token in ``url`` with ``****``."""
+    if token and token in url:
+        return url.replace(token, "****")
+    return url
+
+
 def masked_subscribe_url(cfg: SaseListenConfig, *, show: bool = False) -> str:
     """Return the subscribe URL with the token masked unless asked to show."""
     url = subscribe_url(cfg)
     if show:
         return url
-    return url.replace(resolve_token(cfg), "****")
+    return mask_token_in_url(url, resolve_token(cfg))
+
+
+@contextmanager
+def feed_lock(timeout_s: float = FEED_LOCK_TIMEOUT_S) -> Iterator[None]:
+    """Hold an exclusive lock on the feed directory.
+
+    ``fcntl.flock`` is per open file description, so nested acquisition in
+    the same thread would deadlock. A thread-local depth counter makes the
+    lock re-entrant: ``publish_episode`` may call ``rebuild_feed``.
+    """
+    depth = getattr(_feed_lock_state, "depth", 0)
+    if depth:
+        _feed_lock_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            _feed_lock_state.depth = depth
+        return
+    if not _feed_thread_lock.acquire(timeout=timeout_s):
+        raise SaseListenError(
+            "the feed is busy.",
+            ExitCode.UNEXPECTED,
+            hint="Wait for the other publish to finish, then retry.",
+        )
+    lock_path = locks_dir() / "feed.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = None
+    deadline = time.monotonic() + timeout_s
+    try:
+        handle = lock_path.open("a+", encoding="utf-8")
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise SaseListenError(
+                        "the feed is busy.",
+                        ExitCode.UNEXPECTED,
+                        hint="Wait for the other publish to finish, then retry.",
+                    ) from None
+                time.sleep(0.05)
+        _feed_lock_state.depth = 1
+        try:
+            yield
+        finally:
+            _feed_lock_state.depth = 0
+            with contextlib.suppress(OSError):
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        if handle is not None:
+            handle.close()
+        _feed_thread_lock.release()
 
 
 def funnel_command(feed_dir: Path, token: str) -> str:
@@ -390,31 +462,32 @@ def rebuild_feed(
 
     Returns ``{"episodes": [...ids...], "removed": [...], "feed_xml": str}``.
     """
-    feed_dir = feed_root(cfg, root)
-    moment = now if now is not None else datetime.now(UTC)
-    episodes = list_feed_episodes(feed_dir)
-    removed = apply_retention(
-        episodes,
-        retention_days=cfg.feed.retention_days,
-        max_episodes=cfg.feed.max_episodes,
-        now=moment,
-        root=feed_dir,
-    )
-    kept = [e for e in episodes if e.episode_id not in set(removed)]
-    token = resolve_token(cfg)
-    _atomic_write(
-        feed_dir / CHANNEL_COVER_NAME,
-        generate_title_card(cfg.feed.title.strip() or "SASE Listen"),
-    )
-    _atomic_write(
-        feed_dir / FEED_XML_NAME,
-        build_feed_xml(cfg=cfg, episodes=kept, token=token, now=moment),
-    )
-    return {
-        "episodes": [e.episode_id for e in kept],
-        "removed": removed,
-        "feed_xml": str(feed_dir / FEED_XML_NAME),
-    }
+    with feed_lock():
+        feed_dir = feed_root(cfg, root)
+        moment = now if now is not None else datetime.now(UTC)
+        episodes = list_feed_episodes(feed_dir)
+        removed = apply_retention(
+            episodes,
+            retention_days=cfg.feed.retention_days,
+            max_episodes=cfg.feed.max_episodes,
+            now=moment,
+            root=feed_dir,
+        )
+        kept = [e for e in episodes if e.episode_id not in set(removed)]
+        token = resolve_token(cfg)
+        _atomic_write(
+            feed_dir / CHANNEL_COVER_NAME,
+            generate_title_card(cfg.feed.title.strip() or "SASE Listen"),
+        )
+        _atomic_write(
+            feed_dir / FEED_XML_NAME,
+            build_feed_xml(cfg=cfg, episodes=kept, token=token, now=moment),
+        )
+        return {
+            "episodes": [e.episode_id for e in kept],
+            "removed": removed,
+            "feed_xml": str(feed_dir / FEED_XML_NAME),
+        }
 
 
 def resolve_episode_ref(
@@ -489,15 +562,16 @@ def publish_episode(
             ExitCode.UNEXPECTED,
             hint="Re-render the episode, then publish again.",
         )
-    feed_dir = feed_root(cfg, root)
-    dest = feed_dir / EPISODES_SUBDIR / episode_id
-    dest.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src_mp3, dest / src_mp3.name)
-    for name in ("cover.jpg", "chapters.json", "manifest.json"):
-        candidate = src / name
-        if candidate.is_file():
-            shutil.copyfile(candidate, dest / name)
-    rebuilt = rebuild_feed(cfg, root=feed_dir)
+    with feed_lock():
+        feed_dir = feed_root(cfg, root)
+        dest = feed_dir / EPISODES_SUBDIR / episode_id
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src_mp3, dest / src_mp3.name)
+        for name in ("cover.jpg", "chapters.json", "manifest.json"):
+            candidate = src / name
+            if candidate.is_file():
+                shutil.copyfile(candidate, dest / name)
+        rebuilt = rebuild_feed(cfg, root=feed_dir)
     token = resolve_token(cfg)
     base = cfg.feed.base_url.strip().rstrip("/")
     return {
@@ -515,16 +589,17 @@ def unpublish_episode(
     root: Path | None = None,
 ) -> dict[str, Any]:
     """Remove an episode from the feed dir and regenerate ``feed.xml``."""
-    feed_dir = feed_root(cfg, root)
-    target = feed_dir / EPISODES_SUBDIR / episode_id
-    if not target.is_dir():
-        raise SaseListenError(
-            f"Episode '{episode_id}' is not published.",
-            ExitCode.USAGE,
-            hint="Check the id with `sase-listen feed`.",
-        )
-    shutil.rmtree(target)
-    rebuilt = rebuild_feed(cfg, root=feed_dir)
+    with feed_lock():
+        feed_dir = feed_root(cfg, root)
+        target = feed_dir / EPISODES_SUBDIR / episode_id
+        if not target.is_dir():
+            raise SaseListenError(
+                f"Episode '{episode_id}' is not published.",
+                ExitCode.USAGE,
+                hint="Check the id with `sase-listen feed`.",
+            )
+        shutil.rmtree(target)
+        rebuilt = rebuild_feed(cfg, root=feed_dir)
     return {"episode_id": episode_id, **rebuilt}
 
 
@@ -633,6 +708,8 @@ def feed_status(
     except SaseListenError:
         url = ""
         configured = False
+    from sase_listen.feedhost import local_hostname
+
     return {
         "feed_dir": str(feed_dir),
         "url": url,
@@ -646,4 +723,7 @@ def feed_status(
             "retention_days": cfg.feed.retention_days,
             "max_episodes": cfg.feed.max_episodes,
         },
+        "host": local_hostname(),
+        "sase_listen_version": __version__,
+        "receive_protocol": RECEIVE_PROTOCOL,
     }
