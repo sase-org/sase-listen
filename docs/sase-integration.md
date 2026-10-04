@@ -9,9 +9,9 @@ resolve `kind:path` refs.
 
 Narrate any research report from inside a SASE session:
 
-1. The xprompt resolves the report (a `@research:` ref or the swarm lead's
-   published file), preferring `<name>.md` and falling back to
-   `<name>__final.md`.
+1. The xprompt resolves the report: an explicit `@research:` ref selects
+   exactly that file; swarm audio narrates the lead's `<name>__final.md`
+   (the file the lead wrote, even if `<name>.md` has since appeared).
 2. It runs `sase-listen guide --edition <edition>` (brief by default;
    `full` and `brief` are the supported guide-backed authoring choices) and
    writes `<stem>_narration.md` next to the report (`__final` stripped from
@@ -19,9 +19,10 @@ Narrate any research report from inside a SASE session:
    `edition` matching the selected edition, and `cover` when a
    `<stem>_infographic.png` exists.
 3. It lints with `sase-listen lint <script> --source <report>` until clean,
-   renders with `sase-listen render <script> --json`, and registers the MP3
-   with `sase artifact create` so it rides the completion notification to
-   Telegram.
+   renders with `sase-listen render <script> --json`, registers the MP3 with
+   `sase artifact create -k file -l "audio:<episode_id>"`, and sets
+   `sase var set audio` from the render JSON. A failed render sets
+   `audio.ok=false`, registers no artifact, and completes normally.
 
 The narration companion (`<stem>_narration.md`) is excluded from the
 `@research` inventory and Highlights hook by glob, like the image companion.
@@ -30,12 +31,16 @@ The narration companion (`<stem>_narration.md`) is excluded from the
 
 Pass `audio=true` (optionally `audio_model="@audio"`,
 `audio_edition="brief"` or `"full"`) to add an opt-in stage after the lead
-researcher — and after the linker when it runs, so the edition narrates the
-published report and can use the infographic as cover. The stage agent runs
-the same write → lint → render → register flow as `#research/audio` (brief
-by default) and reports duration, chapters, approximate cost, and feed
-publication. Edition selection affects newly authored narration, not whether
-audio is enabled.
+researcher — and after the image agent when `image=true`, so the infographic
+can be the cover. `audio=true` implies the linker: the linker waits on audio
+and publishes a listen card plus `audio:` frontmatter on the canonical
+`<name>.md`. bob later binds the library MP3 for the Highlights PDF. The
+stage agent runs the same write → lint → render → register flow as
+`#research/audio` (brief by default), sets `sase var set audio`, and reports
+duration, chapters, approximate cost, and feed publication. A failed TTS
+render completes the audio agent so the linker can still publish, without a
+card. Edition selection affects newly authored narration, not whether audio
+is enabled.
 
 ## Telegram delivery (sase-telegram)
 
