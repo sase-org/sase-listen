@@ -542,6 +542,57 @@ def test_publish_masks_item_url_unless_show_url(
     assert "cli-token-xyz" in shown["item_url"]
 
 
+def test_feed_status_remote_via_is_ssh_destination(
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Host feed --json reports via=local; the client must show the dest."""
+    monkeypatch.setattr("sase_listen.feedhost.local_hostname", lambda: "athena")
+    cfg_path = tmp_path / "config.yml"
+    cfg_path.write_text(
+        "feed:\n"
+        "  host: apollo\n"
+        "  host_ssh: [apollo]\n"
+        "  base_url: https://example.com:8443\n"
+        "  token: tok\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SASE_LISTEN_CONFIG", str(cfg_path))
+    host_payload = {
+        "ok": True,
+        "feed_dir": "/host/feed",
+        "url": "https://example.com:8443/****/feed.xml",
+        "url_masked": True,
+        "configured": True,
+        "episodes": 9,
+        "episode_ids": ["ep-one"],
+        "size_bytes": 1,
+        "last_build": "",
+        "retention": {"retention_days": 90, "max_episodes": 200},
+        "host": "apollo",
+        "sase_listen_version": "0.1.0",
+        "receive_protocol": 1,
+        "via": "local",
+        "outbox_pending": 0,
+    }
+    _install_fake_ssh(
+        tmp_path,
+        monkeypatch,
+        {"apollo": {"kind": "json", "stdout": json.dumps(host_payload)}},
+    )
+    assert main(["feed", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["via"] == "apollo"
+    assert payload["host"] == "apollo"
+    assert payload["episodes"] == 9
+    assert payload["receive_protocol"] == 1
+    assert main(["feed"]) == 0
+    human = capsys.readouterr().out
+    assert "Host: apollo (via apollo)" in human
+
+
 def test_feed_status_reports_host_and_protocol(
     isolated: Path,
     tmp_path: Path,

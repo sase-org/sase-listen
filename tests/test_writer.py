@@ -205,6 +205,7 @@ def test_gemini_request_shape_and_response_metadata() -> None:
     assert config.system_instruction == "system prompt"
     assert config.temperature == 0.3
     assert config.max_output_tokens == 16384
+    assert config.automatic_function_calling.disable is True
     assert reply.model_version == "gemini-test-version"
     assert reply.input_tokens == 21
     assert reply.output_tokens == 34
@@ -217,3 +218,19 @@ def test_gemini_error_mapping() -> None:
     assert isinstance(throttled, TransientEngineError)
     unavailable = _map_api_error(SimpleNamespace(code=503))
     assert isinstance(unavailable, TransientEngineError)
+    bad = _map_api_error(
+        SimpleNamespace(code=400, message="INVALID_ARGUMENT: max tokens")
+    )
+    from sase_listen.engines.base import PermanentEngineError
+
+    assert isinstance(bad, PermanentEngineError)
+    assert "HTTP 400" in str(bad)
+    assert "INVALID_ARGUMENT: max tokens" in str(bad)
+    invalid = _map_api_error(
+        SimpleNamespace(
+            code=400,
+            message="400 INVALID_ARGUMENT. API key not valid. API_KEY_INVALID",
+        )
+    )
+    assert isinstance(invalid, CredentialsError)
+    assert "api_key_command" in str(invalid)

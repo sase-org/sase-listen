@@ -18,12 +18,15 @@ from sase_listen.writer.base import WriterReply
 
 def build_generate_config(system: str, temperature: float) -> Any:
     """Build the Gemini generation config (kept small for request snapshot tests)."""
-    from google.genai.types import GenerateContentConfig
+    from google.genai.types import AutomaticFunctionCallingConfig, GenerateContentConfig
 
     return GenerateContentConfig(
         system_instruction=system,
         temperature=temperature,
         max_output_tokens=16384,
+        # generate_content warns and can 400 if the SDK infers AFC tools
+        # from prompt text; the writer never calls tools.
+        automatic_function_calling=AutomaticFunctionCallingConfig(disable=True),
     )
 
 
@@ -36,18 +39,47 @@ def _retry_after(exc: Any) -> float | None:
         return None
 
 
+def _error_detail(exc: Any) -> str:
+    """Return a short, secret-free API error body for the user-facing message."""
+    text = str(exc).strip()
+    if not text:
+        message = getattr(exc, "message", None)
+        text = str(message).strip() if message else ""
+    text = " ".join(text.split())
+    if len(text) > 300:
+        text = text[:297] + "..."
+    return text
+
+
+def _is_invalid_api_key(code: Any, detail: str) -> bool:
+    if code in (401, 403):
+        return True
+    if code != 400:
+        return False
+    lowered = detail.lower()
+    return "api_key_invalid" in lowered or "api key not valid" in lowered
+
+
 def _map_api_error(exc: Any) -> Exception:
     code = getattr(exc, "code", None)
-    if code in (401, 403):
-        return CredentialsError(f"Gemini rejected the writer API key (HTTP {code}).")
+    detail = _error_detail(exc)
+    suffix = f" {detail}" if detail else ""
+    if _is_invalid_api_key(code, detail):
+        return CredentialsError(
+            f"Gemini rejected the writer API key (HTTP {code}). "
+            "Env vars SASE_LISTEN_GEMINI_API_KEY, GEMINI_API_KEY, and "
+            "GOOGLE_API_KEY override engines.gemini.api_key_command."
+        )
     if code == 429:
         return TransientEngineError(
-            f"Gemini writer was rate-limited (HTTP {code}).",
+            f"Gemini writer was rate-limited (HTTP {code}).{suffix}",
             retry_after=_retry_after(exc),
         )
     if isinstance(code, int) and code >= 500:
-        return TransientEngineError(f"Gemini writer server error (HTTP {code}).")
-    return PermanentEngineError(f"Gemini writer request failed (HTTP {code}).")
+        return TransientEngineError(
+            f"Gemini writer server error (HTTP {code}).{suffix}"
+        )
+    return PermanentEngineError(f"Gemini writer request failed (HTTP {code}).{suffix}")
 
 
 class GeminiWriter:

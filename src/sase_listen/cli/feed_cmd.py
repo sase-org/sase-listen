@@ -124,7 +124,9 @@ def _run_init(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
 def _annotate_status(
     status: dict[str, object], cfg: SaseListenConfig, via: str
 ) -> None:
-    status.setdefault("via", via)
+    # Host JSON already has via=local; the client must overwrite with the
+    # SSH destination actually used (e.g. apollo), not setdefault.
+    status["via"] = via
     status["outbox_pending"] = len(pending_publishes())
     if "host" not in status:
         status["host"] = cfg.feed.host.strip()
