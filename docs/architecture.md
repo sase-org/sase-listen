@@ -54,7 +54,8 @@ load source → lint (6 unless --force) → plan chunks → synthesize → gates
 - **Mastering:** per-chapter PCM assembles through `audio/` with the
   configured chunk/chapter gaps plus the wider `intro_gap_s` pause; cover
   resolves from `--cover`, frontmatter, a sibling `<stem>_infographic.png`,
-  then the generated card.
+  then the generated card, unless `--generated-cover` overrides every image
+  candidate and generates the title card directly.
 - **Commit:** `<slug>.mp3`, `manifest.json`, `script.md`, `cover.jpg`, and
   Podcasting 2.0 `chapters.json` land in
   `library/<slug>-<source-hash[:6]>/`; `-o PATH` copies the MP3 out and the

@@ -149,6 +149,7 @@ class RenderRequest:
     edition: str | None = None
     html: str = ""
     refresh: bool = False
+    generated_cover: bool = False
 
 
 @dataclass
@@ -1223,8 +1224,27 @@ def resolve_cover_bytes(
     title: str,
     kind: str,
     date_text: str,
+    generated_cover: bool = False,
 ) -> bytes:
-    """Resolve cover art: --cover, frontmatter, sibling infographic, generated."""
+    """Resolve cover art: --cover, frontmatter, sibling infographic, generated.
+
+    When `generated_cover` is true, the generated title card is returned
+    without inspecting frontmatter or sibling artwork.
+    """
+    if cover_option and generated_cover:
+        raise SaseListenError(
+            "Conflicting cover options: --cover and --generated-cover.",
+            ExitCode.USAGE,
+            hint="Use either --cover or --generated-cover, not both.",
+        )
+    if generated_cover:
+        return resolve_cover(
+            None,
+            title,
+            kind=kind,
+            date_text=date_text,
+            site=loaded.script.meta.site,
+        )
     candidates: list[Path] = []
     if cover_option:
         candidates.append(Path(cover_option).expanduser())
@@ -1562,6 +1582,12 @@ def render(
     :class:`RenderResult`. Raises :class:`SaseListenError` with the
     command's exit code on any failure.
     """
+    if request.cover and request.generated_cover:
+        raise SaseListenError(
+            "Conflicting cover options: --cover and --generated-cover.",
+            ExitCode.USAGE,
+            hint="Use either --cover or --generated-cover, not both.",
+        )
     listener = events if events is not None else RenderEvents()
     effective_config = config if config is not None else load_config()[0]
     loaded = load_source(
@@ -1591,6 +1617,7 @@ def render(
         title=plan.title,
         kind=meta.kind,
         date_text=format_spoken_date(meta.date) if meta.date.strip() else "",
+        generated_cover=request.generated_cover,
     )
     with episode_lock(plan.episode_id):
         listener.on_stage("synthesize")

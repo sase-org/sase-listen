@@ -1056,3 +1056,190 @@ def test_entry_points() -> None:
         "build_feed_xml",
     ):
         assert callable(getattr(feed, name)), f"missing feed API {name}"
+
+
+def test_generated_cover_conflicts_are_usage_errors(
+    isolated: Path, tmp_path: Path
+) -> None:
+    from sase_listen.pipeline import load_source, resolve_cover_bytes
+
+    source = _write(tmp_path, "tiny_narration.md", TINY_SCRIPT)
+    loaded = load_source(source)
+    with pytest.raises(SaseListenError) as exc_info:
+        resolve_cover_bytes(
+            loaded,
+            cover_option=str(tmp_path / "x.png"),
+            title="T",
+            kind="document",
+            date_text="",
+            generated_cover=True,
+        )
+    assert exc_info.value.code == ExitCode.USAGE
+    with pytest.raises(SaseListenError) as dry_info:
+        render(
+            RenderRequest(
+                source=source,
+                narrator="tone",
+                cover=str(tmp_path / "x.png"),
+                generated_cover=True,
+                dry_run=True,
+            )
+        )
+    assert dry_info.value.code == ExitCode.USAGE
+    with pytest.raises(SaseListenError) as missing_info:
+        render(
+            RenderRequest(
+                source=str(tmp_path / "missing.md"),
+                narrator="tone",
+                cover="x.png",
+                generated_cover=True,
+                dry_run=True,
+            )
+        )
+    assert missing_info.value.code == ExitCode.USAGE
+
+
+def test_generated_cover_ignores_frontmatter_and_sibling(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from sase_listen.audio.cover import resolve_cover
+    from sase_listen.pipeline import (
+        format_spoken_date,
+        load_source,
+        resolve_cover_bytes,
+    )
+
+    front = tmp_path / "front.png"
+    Image.new("RGB", (32, 32), (30, 200, 30)).save(front)
+    script = TINY_SCRIPT.replace("producer: agent", "producer: agent\ncover: front.png")
+    source = _write(tmp_path, "covergen_narration.md", script)
+    sibling = tmp_path / "covergen_narration_infographic.png"
+    Image.new("RGB", (32, 32), (30, 30, 200)).save(sibling)
+    loaded = load_source(source)
+    meta = loaded.script.meta
+    date_text = format_spoken_date(meta.date) if meta.date.strip() else ""
+    expected = resolve_cover(
+        None, meta.title, kind=meta.kind, date_text=date_text, site=meta.site
+    )
+    actual = resolve_cover_bytes(
+        loaded,
+        cover_option="",
+        title=meta.title,
+        kind=meta.kind,
+        date_text=date_text,
+        generated_cover=True,
+    )
+    assert actual == expected
+
+    missing_script = TINY_SCRIPT.replace(
+        "producer: agent", "producer: agent\ncover: gone.png"
+    )
+    missing_source = _write(tmp_path, "covermiss2_narration.md", missing_script)
+    missing_loaded = load_source(missing_source)
+    missing_meta = missing_loaded.script.meta
+    missing_date = (
+        format_spoken_date(missing_meta.date) if missing_meta.date.strip() else ""
+    )
+    missing_expected = resolve_cover(
+        None,
+        missing_meta.title,
+        kind=missing_meta.kind,
+        date_text=missing_date,
+        site=missing_meta.site,
+    )
+    assert (
+        resolve_cover_bytes(
+            missing_loaded,
+            cover_option="",
+            title=missing_meta.title,
+            kind=missing_meta.kind,
+            date_text=missing_date,
+            generated_cover=True,
+        )
+        == missing_expected
+    )
+
+    junk = tmp_path / "junk.png"
+    junk.write_bytes(b"not an image")
+    junk_script = TINY_SCRIPT.replace(
+        "producer: agent", "producer: agent\ncover: junk.png"
+    )
+    junk_source = _write(tmp_path, "coverjunk_narration.md", junk_script)
+    junk_loaded = load_source(junk_source)
+    junk_meta = junk_loaded.script.meta
+    junk_date = format_spoken_date(junk_meta.date) if junk_meta.date.strip() else ""
+    junk_expected = resolve_cover(
+        None,
+        junk_meta.title,
+        kind=junk_meta.kind,
+        date_text=junk_date,
+        site=junk_meta.site,
+    )
+    assert (
+        resolve_cover_bytes(
+            junk_loaded,
+            cover_option="",
+            title=junk_meta.title,
+            kind=junk_meta.kind,
+            date_text=junk_date,
+            generated_cover=True,
+        )
+        == junk_expected
+    )
+
+    front.unlink()
+    sibling.unlink()
+    reloaded = load_source(source)
+    reloaded_meta = reloaded.script.meta
+    reloaded_date = (
+        format_spoken_date(reloaded_meta.date) if reloaded_meta.date.strip() else ""
+    )
+    assert (
+        resolve_cover_bytes(
+            reloaded,
+            cover_option="",
+            title=reloaded_meta.title,
+            kind=reloaded_meta.kind,
+            date_text=reloaded_date,
+            generated_cover=True,
+        )
+        == expected
+    )
+
+
+def test_generated_cover_tone_render_embeds_card(
+    isolated: Path, tmp_path: Path
+) -> None:
+    import os
+
+    from mutagen.id3 import ID3
+    from PIL import Image
+
+    from sase_listen.audio.cover import resolve_cover
+    from sase_listen.pipeline import format_spoken_date, load_source
+
+    info = tmp_path / "info.png"
+    Image.new("RGB", (32, 32), (200, 30, 30)).save(info)
+    sibling = tmp_path / "reuse_narration_infographic.png"
+    Image.new("RGB", (32, 32), (30, 30, 200)).save(sibling)
+    script = TINY_SCRIPT.replace("producer: agent", "producer: agent\ncover: info.png")
+    source = _write(tmp_path, "reuse_narration.md", script)
+    before = Path(source).read_text(encoding="utf-8")
+    loaded = load_source(source)
+    meta = loaded.script.meta
+    date_text = format_spoken_date(meta.date) if meta.date.strip() else ""
+    expected = resolve_cover(
+        None, meta.title, kind=meta.kind, date_text=date_text, site=meta.site
+    )
+    outcome = render(
+        RenderRequest(source=source, narrator="tone", generated_cover=True)
+    )
+    assert isinstance(outcome, RenderResult)
+    assert outcome.published is False
+    library = Path(os.environ["XDG_DATA_HOME"]) / "sase-listen" / "library"
+    episode = library / outcome.episode_id
+    cover_bytes = (episode / "cover.jpg").read_bytes()
+    assert cover_bytes == expected
+    tag = ID3(str(Path(outcome.audio_path)))
+    assert tag["APIC:Cover"].data == expected  # type: ignore[attr-defined]
+    assert Path(source).read_text(encoding="utf-8") == before

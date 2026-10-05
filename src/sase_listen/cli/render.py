@@ -33,7 +33,14 @@ def add_parser(
         "source",
         help="Narration script, Markdown file, kind:path ref, or http(s) URL",
     )
-    p.add_argument("--cover", default="", help="Cover image path.")
+    cover_group = p.add_mutually_exclusive_group()
+    cover_group.add_argument("--cover", default="", help="Cover image path.")
+    cover_group.add_argument(
+        "-g",
+        "--generated-cover",
+        action="store_true",
+        help="Generate the title card and ignore frontmatter and sibling artwork.",
+    )
     p.add_argument("--dry-run", action="store_true", help="Print the plan and stop.")
     p.add_argument(
         "-e",
@@ -167,6 +174,7 @@ def run(args: argparse.Namespace) -> int:
         edition=args.edition,
         html=args.html or "",
         refresh=bool(args.refresh),
+        generated_cover=bool(getattr(args, "generated_cover", False)),
     )
     as_json = bool(args.json)
     events = None if as_json else _ProgressEvents()

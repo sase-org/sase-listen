@@ -26,7 +26,7 @@ kind: research # research | document (default: document)
 edition: {{ edition }} # full | brief | digest | verbatim
 producer: agent # agent | deterministic
 target_minutes: {{ target_minutes }} # optional
-cover: one_updates_tab_infographic.png # optional, relative to the script file
+cover: custom_artwork.png # optional explicitly chosen artwork, relative to the script file
 ---
 
 ## The question
@@ -50,8 +50,10 @@ Rules:
   stem with any trailing `__final` removed.
 - Record the source version with `git hash-object <report>` into
   `source_blob`.
-- When a `<stem>_infographic.png` sits next to the report, set
-  `cover: <stem>_infographic.png`.
+- `cover` is optional explicitly chosen artwork, relative to the script file.
+  Omit it to use the generated title card. Research audio renders with
+  `sase-listen render <script> --generated-cover`, which generates the title
+  card and ignores `cover` frontmatter and any sibling `<stem>_infographic.png`.
 
 ## Shape
 

@@ -12,8 +12,9 @@ lint errors (`render` refuses unless `--force`).
 
 ```bash
 sase-listen render SOURCE [-o OUT.mp3] [-n NARRATOR] [--voice VOICE]
-  [--cover IMG] [--dry-run] [-e {brief,full,verbatim}] [--html FILE] [--refresh]
-  [--publish | --no-publish] [--no-cache] [--force] [--json]
+  [--cover IMG | -g/--generated-cover] [--dry-run] [-e {brief,full,verbatim}]
+  [--html FILE] [--refresh] [--publish | --no-publish] [--no-cache] [--force]
+  [--json]
 ```
 
 `SOURCE` is a narration script, a plain Markdown file (normalized
@@ -24,6 +25,9 @@ deterministic article-text reading. `--html FILE` uses saved browser HTML, and
 `--refresh` fetches and writes it again. `--dry-run` writes the article script
 if needed, prints the chunk plan, and stops.
 `--publish` / `--no-publish` override the `feed.auto_publish` config.
+`--cover IMG` uses explicitly chosen artwork; `-g` / `--generated-cover`
+generates the title card and ignores `cover` frontmatter and any sibling
+`<stem>_infographic.png`. The two cover options are mutually exclusive.
 See [Reliability](reliability.md) for gates, cache, and manifests.
 
 ## `script` — normalize Markdown to a script

@@ -23,7 +23,7 @@ kind: research # research | document | article (default: document)
 edition: brief # full | brief | digest | verbatim
 producer: agent # agent | deterministic
 target_minutes: 4 # optional
-cover: one_updates_tab_infographic.png # optional, relative to the script file
+cover: custom_artwork.png # optional explicitly chosen artwork, relative to the script file
 ---
 
 ## The question
@@ -43,6 +43,11 @@ model version, prompt version, and lint-repair attempt count.
 The renderer adds the spoken intro (AI disclosure) and outro, so scripts
 must not. Agent scripts are named `<stem>_narration.md`, where `<stem>` is
 the report stem with any trailing `__final` removed.
+
+`cover` is optional explicitly chosen artwork, relative to the script file.
+Omit it to use the generated title card. Research audio renders with
+`sase-listen render <script> --generated-cover`, which generates the title
+card and ignores `cover` frontmatter and any sibling `<stem>_infographic.png`.
 
 Edition budgets at 150 words per minute: `full` is at most 2,400 words
 (about 16 minutes), `brief` is about 600 words, `digest` is about 250 words
