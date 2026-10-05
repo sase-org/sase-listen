@@ -18,7 +18,7 @@ import shlex
 import socket
 import subprocess
 import tarfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -193,6 +193,7 @@ def run_remote(
     *,
     stdin: bytes | None = None,
     timeout_s: float = DEFAULT_REMOTE_TIMEOUT_S,
+    on_attempt: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Run ``sase-listen`` args on the feed host.
 
@@ -209,7 +210,14 @@ def run_remote(
     if "--json" not in remote_args:
         remote_args.append("--json")
     last_stderr = ""
+    prev_dest = ""
     for dest in dests:
+        if on_attempt is not None:
+            if prev_dest:
+                on_attempt(f"{prev_dest} unreachable · trying {dest}")
+            else:
+                on_attempt(f"sending to {host} via {dest}")
+        prev_dest = dest
         argv = ssh_argv(dest, remote_args)
         try:
             proc = subprocess.run(
@@ -501,14 +509,22 @@ def _push_episode(
     return result
 
 
-def flush_pending(cfg: SaseListenConfig) -> dict[str, Any]:
+def flush_pending(
+    cfg: SaseListenConfig, *, on_step: Callable[[str], None] | None = None
+) -> dict[str, Any]:
     """Retry every queued publish. Returns published and failed lists."""
     published: list[str] = []
     failed: list[dict[str, str]] = []
-    for entry in pending_publishes():
-        episode_id = str(entry.get("episode_id", ""))
-        if not episode_id:
-            continue
+    queued = [
+        str(entry.get("episode_id", ""))
+        for entry in pending_publishes()
+        if str(entry.get("episode_id", ""))
+    ]
+    if on_step is not None and queued:
+        on_step(f"sending {len(queued)} queued episode(s) first")
+    for position, episode_id in enumerate(queued, start=1):
+        if on_step is not None:
+            on_step(f"sending queued episode {position} of {len(queued)}")
         try:
             _push_episode(episode_id, cfg)
         except SaseListenError as exc:
@@ -526,6 +542,7 @@ def publish_any(
     *,
     library: Path | None = None,
     show_url: bool = False,
+    on_step: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Publish locally or stream the episode to the feed host.
 
@@ -534,6 +551,25 @@ def publish_any(
     refuse_if_misrouted(cfg)
     if feed_role(cfg) == "remote":
         with contextlib.suppress(SaseListenError):
-            flush_pending(cfg)
-        return _push_episode(episode_id, cfg, library=library, show_url=False)
+            flush_pending(cfg, on_step=on_step)
+        if on_step is not None:
+            on_step("packing the episode")
+        host = cfg.feed.host.strip()
+
+        def _attempt(text: str) -> None:
+            if on_step is not None:
+                on_step(text)
+
+        payload, dest = run_remote(
+            cfg,
+            ["feed", "receive", episode_id, "--json"],
+            stdin=pack_episode(episode_id, library),
+            timeout_s=RECEIVE_TIMEOUT_S,
+            on_attempt=_attempt,
+        )
+        payload["host"] = host
+        payload["via"] = dest
+        return payload
+    if on_step is not None:
+        on_step("updating the feed")
     return _push_episode(episode_id, cfg, library=library, show_url=show_url)

@@ -13,7 +13,7 @@ from sase_listen.engines.base import (
     TransientEngineError,
     is_invalid_api_key,
 )
-from sase_listen.engines.retry import synthesize_with_retry
+from sase_listen.engines.retry import RetryWait, synthesize_with_retry
 from sase_listen.writer.base import WriterReply
 
 
@@ -91,6 +91,7 @@ class GeminiWriter:
         timeout_s: int = 300,
         max_retries: int = 4,
         client_factory: Callable[..., Any] | None = None,
+        on_retry: Callable[[RetryWait], None] | None = None,
     ) -> None:
         if not api_key or not api_key.strip():
             raise CredentialsError(
@@ -104,6 +105,7 @@ class GeminiWriter:
         self.timeout_s = timeout_s
         self.max_retries = max(0, max_retries)
         self._client_factory = client_factory
+        self._on_retry = on_retry
 
     def _client(self) -> Any:
         if self._client_factory is not None:
@@ -152,4 +154,5 @@ class GeminiWriter:
         return synthesize_with_retry(
             lambda: self._generate(system, user),
             max_retries=self.max_retries,
+            on_retry=self._on_retry,
         )

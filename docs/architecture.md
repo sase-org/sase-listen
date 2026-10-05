@@ -40,7 +40,7 @@ through audited `sase artifact read`) into a library episode:
 
 ```text
 load source → lint (6 unless --force) → plan chunks → synthesize → gates
-    → master → tag → episode gates → atomic commit
+    → master → episode gates → atomic commit → publish
 ```
 
 - **Planning:** the lexicon applies to all spoken text; the intro chunk
@@ -59,9 +59,20 @@ load source → lint (6 unless --force) → plan chunks → synthesize → gates
 - **Commit:** `<slug>.mp3`, `manifest.json`, `script.md`, `cover.jpg`, and
   Podcasting 2.0 `chapters.json` land in
   `library/<slug>-<source-hash[:6]>/`; `-o PATH` copies the MP3 out and the
-  cache LRU is enforced. Progress flows through the `RenderEvents` protocol
-  (`plan`, `chunk started/finished/retried`, `stage`, `done`), which the cli
-  phase renders without touching the orchestration.
+  cache LRU is enforced. Publish runs last when `should_publish` holds.
+- **Events protocol (`src/sase_listen/events.py`):** the pipeline owns
+  facts and short plain-English step and summary strings; the CLI
+  (`src/sase_listen/cli/progress.py`) owns all layout and styling. Stages
+  are `source`, `write`, `plan`, `synthesize`, `gates`, `master`, `save`,
+  and `publish` (the old `tag` and `commit` names are retired: tagging is
+  a master sub-step, and verify/commit/copy/prune are the save stage).
+  Order per stage: `on_stage`, then any mix of `on_step`, `on_retry_wait`,
+  and chunk events, then `on_stage_done`; a failing stage simply raises.
+  `on_stages` may be re-sent to refine the list (only the pending tail is
+  replaced; completed and active rows never move). `on_chunk_started`,
+  `on_chunk_finished`, and `on_retry_wait` may arrive from worker threads,
+  so sinks must be thread-safe. Human chunk numbering is 1-based in
+  display and gate reports; manifest and JSON `index` fields stay 0-based.
 
 ## Web articles (`src/sase_listen/web/`)
 

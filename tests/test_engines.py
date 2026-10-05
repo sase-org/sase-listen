@@ -349,6 +349,57 @@ def test_retry_honors_retry_after_floor() -> None:
     assert sleeps == [30.0]
 
 
+def test_retry_on_retry_callback() -> None:
+    from sase_listen.engines.retry import RetryWait
+
+    calls = {"n": 0}
+    sleeps: list[float] = []
+    seen: list[RetryWait] = []
+
+    def operation() -> str:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TransientEngineError("flaky")
+        return "ok"
+
+    assert (
+        synthesize_with_retry(
+            operation,
+            max_retries=4,
+            sleep=sleeps.append,
+            rand=lambda lo, hi: hi,
+            on_retry=seen.append,
+        )
+        == "ok"
+    )
+    assert [wait.attempt for wait in seen] == [1, 2]
+    assert all(wait.max_retries == 4 for wait in seen)
+    assert [wait.delay_s for wait in seen] == sleeps
+    assert all(wait.reason == "flaky" for wait in seen)
+
+
+def test_retry_on_retry_reflects_retry_after() -> None:
+    from sase_listen.engines.retry import RetryWait
+
+    seen: list[RetryWait] = []
+
+    def operation() -> str:
+        raise TransientEngineError("slow down", retry_after=30.0)
+
+    with pytest.raises(TransientEngineError):
+        synthesize_with_retry(
+            operation,
+            max_retries=1,
+            sleep=lambda _: None,
+            rand=lambda lo, hi: 0.0,
+            on_retry=seen.append,
+        )
+    assert len(seen) == 1
+    assert seen[0].delay_s == 30.0
+    assert seen[0].attempt == 1
+    assert "slow down" in seen[0].reason
+
+
 # --- Tone engine ---
 
 

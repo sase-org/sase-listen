@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from sase_listen.cli.progress import activity
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.feed import resolve_episode_ref, unpublish_episode
@@ -98,7 +99,8 @@ def run_publish(args: argparse.Namespace) -> int:
     try:
         refuse_if_misrouted(cfg)
         if args.pending:
-            result = flush_pending(cfg)
+            with activity("Flushing queued publishes…", enabled=not as_json) as act:
+                result = flush_pending(cfg, on_step=act.update)
             failed = result["failed"]
             if as_json:
                 print(json.dumps({"ok": not failed, **result}))
@@ -116,9 +118,17 @@ def run_publish(args: argparse.Namespace) -> int:
                 ExitCode.USAGE,
                 hint="Example: sase-listen publish --latest",
             )
-        result = publish_any(
-            episode_id, cfg, show_url=bool(args.show_url) and feed_role(cfg) == "local"
-        )
+        host = cfg.feed.host.strip()
+        target = host if feed_role(cfg) == "remote" else "the local feed"
+        with activity(
+            f"Publishing {episode_id} to {target}…", enabled=not as_json
+        ) as act:
+            result = publish_any(
+                episode_id,
+                cfg,
+                show_url=bool(args.show_url) and feed_role(cfg) == "local",
+                on_step=act.update,
+            )
     except SaseListenError as exc:
         if feed_role(cfg) == "remote" and not args.pending and episode_id:
             _queue_remote_failure(cfg, episode_id, exc)
@@ -142,7 +152,13 @@ def run_unpublish(args: argparse.Namespace) -> int:
     try:
         refuse_if_misrouted(cfg)
         if feed_role(cfg) == "remote":
-            result, dest = run_remote(cfg, ["unpublish", args.episode, "--json"])
+            host = cfg.feed.host.strip()
+            with activity(
+                f"Removing {args.episode} from {host}…", enabled=not as_json
+            ) as act:
+                result, dest = run_remote(
+                    cfg, ["unpublish", args.episode, "--json"], on_attempt=act.update
+                )
             result["host"] = cfg.feed.host.strip()
             result["via"] = dest
         else:

@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -60,8 +61,11 @@ from sase_listen.engines import (
     resolve_narrator,
     synthesize_with_retry,
 )
+from sase_listen.engines.retry import RetryWait
 from sase_listen.engines.tone import ToneEngine
 from sase_listen.errors import ExitCode, SaseListenError
+from sase_listen.events import RenderEvents as RenderEvents
+from sase_listen.events import Stage
 from sase_listen.feed import mark_manifest_published
 from sase_listen.feedhost import PENDING_HINT, feed_role, publish_any, queue_publish
 from sase_listen.lexicon import Lexicon, load_merged
@@ -85,6 +89,13 @@ from sase_listen.script import (
     is_structural,
     lint_text,
     parse_script_text,
+)
+from sase_listen.ui import (
+    approx_cost,
+    approx_minutes,
+    format_bytes,
+    format_duration,
+    format_words,
 )
 from sase_listen.web.editions import (
     article_coverage_sentence,
@@ -231,26 +242,117 @@ class RenderResult:
     warnings: list[str] = field(default_factory=list)
 
 
-class RenderEvents:
-    """Progress callbacks; the cli phase overrides these for live display."""
+def source_stages(source: str, edition: str | None) -> list[Stage]:
+    """Return the expected source stages for a render source.
 
-    def on_plan(self, plan: RenderPlan) -> None:
-        """Called once chunk planning (and cache lookup) finishes."""
+    URL brief/full sources fetch the article then write the script; every
+    other source resolves in a single source stage.
+    """
+    selected = edition or "brief"
+    if looks_like_url(source) and selected in {"brief", "full"}:
+        return [Stage.SOURCE, Stage.WRITE]
+    return [Stage.SOURCE]
 
-    def on_chunk_started(self, index: int, total: int) -> None:
-        """Called when synthesis of chunk `index` starts."""
 
-    def on_chunk_finished(self, index: int, total: int, *, cached: bool) -> None:
-        """Called when chunk `index` has audio (cached or synthesized)."""
+def should_publish(
+    request: RenderRequest, cfg: SaseListenConfig, kind: str | None
+) -> bool:
+    """Return True when a render should publish (the shared want_publish rule)."""
+    if request.publish is not None:
+        return request.publish
+    if kind is None:
+        return bool(cfg.feed.auto_publish)
+    return bool(cfg.feed.auto_publish and kind in {"research", "article"})
 
-    def on_chunk_retried(self, index: int, attempt: int, reason: str) -> None:
-        """Called before each retry or gate re-synthesis of chunk `index`."""
 
-    def on_stage(self, stage: str) -> None:
-        """Called on stage changes: synthesize, gates, master, tag, commit."""
+def expected_stages(
+    request: RenderRequest, cfg: SaseListenConfig, kind: str | None
+) -> list[Stage]:
+    """Return the full expected stage list for a render request."""
+    stages = list(source_stages(request.source, request.edition))
+    stages.append(Stage.PLAN)
+    stages.append(Stage.SYNTHESIZE)
+    stages.append(Stage.GATES)
+    stages.append(Stage.MASTER)
+    stages.append(Stage.SAVE)
+    if request.dry_run:
+        return stages[: stages.index(Stage.PLAN) + 1]
+    if should_publish(request, cfg, kind):
+        stages.append(Stage.PUBLISH)
+    return stages
 
-    def on_done(self, result: RenderResult) -> None:
-        """Called with the finished result after the commit."""
+
+def _stage_values(stages: list[Stage]) -> list[str]:
+    return [stage.value for stage in stages]
+
+
+def summarize_source(loaded: LoadedSource, *, normalized: bool = False) -> str:
+    """Compose the SOURCE stage summary from loaded provenance."""
+    meta = loaded.source_meta
+    words = int(meta.get("words", 0) or 0)
+    if not words:
+        words = loaded.script.words()
+    if loaded.source_url:
+        host = loaded.source_url.split("://", 1)[-1].split("/", 1)[0]
+        cached = " · cached" if meta.get("reused") else ""
+        return f"{host} · {format_words(words)}{cached}"
+    if looks_like_ref(loaded.source_label):
+        return f"{loaded.source_label} · {format_words(words)}"
+    name = Path(loaded.source_label).name or loaded.source_label
+    suffix = " · normalized from Markdown" if normalized else ""
+    return f"{name} · {format_words(words)}{suffix}"
+
+
+def summarize_write(words: int, chapters: int, attempts: int, *, cached: bool) -> str:
+    """Compose the WRITE stage summary."""
+    if cached:
+        return f"{format_words(words)} · {chapters} chapters · cached"
+    plural_attempt = "attempt" if attempts == 1 else "attempts"
+    return f"{format_words(words)} · {chapters} chapters · {attempts} {plural_attempt}"
+
+
+def summarize_plan(plan: RenderPlan) -> str:
+    """Compose the PLAN stage summary."""
+    total = len(plan.chunks)
+    cached = plan.cached_chunks
+    if total > 0 and cached >= total:
+        return f"all {total} chunks cached"
+    minutes = approx_minutes(plan.estimated_duration_s)
+    cost = approx_cost(plan.estimated_cost_usd)
+    parts = f"{total} chunks · {cached} cached · {minutes}"
+    if plan.estimated_cost_usd > 0:
+        parts += f" · {cost}"
+    return parts
+
+
+def summarize_synthesize(
+    synthesized: int, cached: int, retries: int, *, total: int
+) -> str:
+    """Compose the SYNTHESIZE stage summary."""
+    if total > 0 and synthesized == 0:
+        return f"all {total} chunks cached"
+    retry_word = "retry" if retries == 1 else "retries"
+    return f"{synthesized} synthesized · {cached} cached · {retries} {retry_word}"
+
+
+def summarize_gates(count: int, resynthesized: int, *, warnings: list[str]) -> str:
+    """Compose the GATES stage summary."""
+    if resynthesized:
+        return f"{resynthesized} re-synthesized"
+    return f"all {count} chunks in range"
+
+
+def summarize_master(duration_s: float, lufs: float, size_bytes: int) -> str:
+    """Compose the MASTER stage summary."""
+    size = format_bytes(size_bytes)
+    return f"{format_duration(duration_s)} · {lufs:.1f} LUFS · {size}"
+
+
+def summarize_save(chapters: int, *, copied_name: str = "") -> str:
+    """Compose the SAVE stage summary."""
+    suffix = f" · copied to {copied_name}" if copied_name else ""
+    chapter_word = "chapter" if chapters == 1 else "chapters"
+    return f"verified · {chapters} {chapter_word}{suffix}"
 
 
 @dataclass
@@ -486,6 +588,7 @@ def load_source(
     html_file: str = "",
     refresh: bool = False,
     config: SaseListenConfig | None = None,
+    events: RenderEvents | None = None,
 ) -> LoadedSource:
     """Resolve a render source to an exact narration script plus provenance."""
     if looks_like_url(source):
@@ -496,35 +599,96 @@ def load_source(
                 ExitCode.USAGE,
                 hint="Use --edition brief, --edition full, or --edition verbatim.",
             )
-        acquired = acquire(source, html_file=html_file or None, refresh=refresh)
-        metadata = acquired.metadata
+        if events is not None:
+            events.on_stage(Stage.SOURCE.value)
+        src_step: Callable[[str], None] | None = None
+        if events is not None:
+            _ev = events
+
+            def _src_step(text: str) -> None:
+                _ev.on_step(Stage.SOURCE.value, text)
+
+            src_step = _src_step
+        acquired = acquire(
+            source,
+            html_file=html_file or None,
+            refresh=refresh,
+            on_step=src_step,
+        )
+        metadata = dict(acquired.metadata)
+        metadata["reused"] = acquired.reused
         canonical = str(metadata.get("canonical_url", source))
+        if events is not None:
+            title = str(metadata.get("title", "") or "")
+            if title:
+                events.on_title(title)
         writer_summary: dict[str, Any] = {}
+        write_cached = False
+        write_attempts = 0
+        write_words = 0
+        write_chapters = 0
         if selected_edition in {"brief", "full"}:
             from sase_listen.writer import create_writer
             from sase_listen.writer.author import author_script, load_cached_script
 
             cfg = config if config is not None else load_config()[0]
+            if events is not None:
+                events.on_stage(Stage.WRITE.value)
             authored = (
                 None if refresh else load_cached_script(acquired, selected_edition, cfg)
             )
-            if authored is None:
+            if authored is not None:
+                write_cached = True
+                script_text = authored.text
+                script_path = authored.path
+                writer_summary = authored.writer
+                parsed = parse_script_text(script_text)
+                write_words = parsed.words()
+                write_chapters = len(parsed.chapters)
+                write_attempts = int(authored.writer.get("attempts", 0) or 0)
+            else:
+                if events is not None:
+                    events.on_step(Stage.WRITE.value, "reading the Gemini API key")
+                write_retry: Callable[[RetryWait], None] | None = None
+                if events is not None:
+                    _wev = events
+
+                    def _write_retry(wait: RetryWait) -> None:
+                        _wev.on_retry_wait(Stage.WRITE.value, None, wait)
+
+                    write_retry = _write_retry
+                writer = create_writer(cfg, on_retry=write_retry)
                 authored = author_script(
                     acquired,
                     selected_edition,
                     cfg,
-                    create_writer(cfg),
+                    writer,
                     refresh=refresh,
+                    events=events,
                 )
-
-            script_text = authored.text
-            script_path: Path | None = authored.path
-            writer_summary = authored.writer
-            omissions: list[Omission] = []
+                script_text = authored.text
+                script_path = authored.path
+                writer_summary = authored.writer
+                parsed = parse_script_text(script_text)
+                write_words = parsed.words()
+                write_chapters = len(parsed.chapters)
+                write_attempts = int(authored.writer.get("attempts", 0) or 0)
+            url_omissions: list[Omission] = []
+            omissions = url_omissions
+            if events is not None:
+                events.on_stage_done(
+                    Stage.WRITE.value,
+                    summarize_write(
+                        write_words,
+                        write_chapters,
+                        write_attempts,
+                        cached=write_cached,
+                    ),
+                )
         else:
             script_text, omissions = _article_script(acquired)
             script_path = acquired.verbatim_script_path
-        return LoadedSource(
+        loaded = LoadedSource(
             script_text=script_text,
             script=parse_script_text(script_text),
             omissions=omissions,
@@ -536,6 +700,9 @@ def load_source(
             source_meta=dict(metadata),
             writer=writer_summary,
         )
+        if events is not None:
+            events.on_stage_done(Stage.SOURCE.value, summarize_source(loaded))
+        return loaded
     if edition in {"brief", "full"}:
         raise SaseListenError(
             "Generated brief and full editions are available for article URLs.",
@@ -546,14 +713,20 @@ def load_source(
             ),
         )
     if looks_like_ref(source):
+        if events is not None:
+            events.on_stage(Stage.SOURCE.value)
+            events.on_step(
+                Stage.SOURCE.value, f"reading {source} via sase artifact read"
+            )
         text = read_artifact_ref(source)
         if looks_like_script(text):
             script_text = text
-            omissions = []
+            ref_omissions: list[Omission] = []
+            omissions = ref_omissions
         else:
             filename = source.split("/")[-1] or "episode.md"
             script_text, omissions = normalize_markdown(text, filename=filename)
-        return LoadedSource(
+        ref_loaded = LoadedSource(
             script_text=script_text,
             script=parse_script_text(script_text),
             omissions=omissions,
@@ -562,6 +735,9 @@ def load_source(
             source_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
             source_path=None,
         )
+        if events is not None:
+            events.on_stage_done(Stage.SOURCE.value, summarize_source(ref_loaded))
+        return ref_loaded
     path = Path(source)
     if not path.exists():
         raise SaseListenError(
@@ -571,10 +747,13 @@ def load_source(
                 "Pass a narration script, Markdown file, kind:path ref, or http(s) URL."
             ),
         )
+    if events is not None:
+        events.on_stage(Stage.SOURCE.value)
     raw = path.read_text(encoding="utf-8")
-    if looks_like_script(raw):
+    was_script = looks_like_script(raw)
+    file_omissions: list[Omission] = []
+    if was_script:
         script_text = raw
-        file_omissions: list[Omission] = []
     else:
         script_text, file_omissions = normalize_markdown(raw, filename=path.name)
     resolved = path.resolve()
@@ -593,7 +772,7 @@ def load_source(
             from sase_listen.writer.author import load_writer_summary
 
             saved_writer_summary = load_writer_summary(resolved, script.meta.edition)
-        return LoadedSource(
+        article_loaded = LoadedSource(
             script_text=script_text,
             script=script,
             omissions=file_omissions,
@@ -605,7 +784,13 @@ def load_source(
             source_meta=metadata,
             writer=saved_writer_summary,
         )
-    return LoadedSource(
+        if events is not None:
+            title = script.meta.title.strip()
+            if title:
+                events.on_title(title)
+            events.on_stage_done(Stage.SOURCE.value, summarize_source(article_loaded))
+        return article_loaded
+    file_loaded = LoadedSource(
         script_text=script_text,
         script=script,
         omissions=file_omissions,
@@ -614,6 +799,14 @@ def load_source(
         source_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         source_path=resolved,
     )
+    if events is not None:
+        title = script.meta.title.strip()
+        if title:
+            events.on_title(title)
+        events.on_stage_done(
+            Stage.SOURCE.value, summarize_source(file_loaded, normalized=not was_script)
+        )
+    return file_loaded
 
 
 def check_lint(script_text: str, *, force: bool) -> tuple[list[str], list[str]]:
@@ -905,6 +1098,7 @@ def synthesize_one(
     *,
     max_retries: int,
     config: SaseListenConfig | None = None,
+    on_retry: Callable[[RetryWait], None] | None = None,
 ) -> tuple[bytes, int, int]:
     """Synthesize one chunk; return (pcm, sample_rate, attempts)."""
     calls = 0
@@ -925,7 +1119,7 @@ def synthesize_one(
 
     try:
         pcm, sample_rate = synthesize_with_retry(
-            _operation, max_retries=max_retries, sleep=time.sleep
+            _operation, max_retries=max_retries, sleep=time.sleep, on_retry=on_retry
         )
     except CredentialsError as exc:
         hint = ""
@@ -963,7 +1157,14 @@ def synthesize_chunks(
     events: RenderEvents,
     config: SaseListenConfig | None = None,
 ) -> list[SynthesizedChunk]:
-    """Synthesize every uncached chunk, caching each result immediately."""
+    """Synthesize every uncached chunk, caching each result immediately.
+
+    Each worker announces its own start (so queued chunks stay silent),
+    streams retry waits, and writes its result to the cache itself before
+    reporting completion. The collect loop uses timed waits so a terminal
+    Ctrl-C reaches the main thread promptly; on any interruption queued
+    futures are cancelled while running chunks drain and cache themselves.
+    """
     total = len(plan.chunks)
     out: list[SynthesizedChunk | None] = [None] * total
     pending: list[PlannedChunk] = []
@@ -983,47 +1184,72 @@ def synthesize_chunks(
                 events.on_chunk_finished(chunk.index, total, cached=True)
                 continue
         pending.append(chunk)
-        events.on_chunk_started(chunk.index, total)
     if pending:
-        narrator = plan.narrator
-        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = {
-                pool.submit(
-                    synthesize_one,
-                    engine,
-                    narrator,
-                    chunk.text,
-                    max_retries=max_retries,
-                    config=config,
-                ): chunk
-                for chunk in pending
-            }
-            try:
-                for future in concurrent.futures.as_completed(futures):
-                    chunk = futures[future]
-                    pcm, sample_rate, attempts = future.result()
-                    if use_cache:
-                        cache.put(
-                            chunk.cache_key,
-                            pcm,
-                            sample_rate=sample_rate,
-                            words=chunk.words,
-                            usage={"engine": narrator.engine, "model": narrator.model},
-                        )
-                    made = SynthesizedChunk(
-                        planned=chunk,
-                        pcm=pcm,
-                        sample_rate=sample_rate,
-                        attempts=attempts,
-                        cached=False,
-                    )
-                    made.measure()
-                    out[chunk.index] = made
-                    events.on_chunk_finished(chunk.index, total, cached=False)
-            except SaseListenError:
-                for future in futures:
-                    future.cancel()
-                raise
+        events.on_step(
+            Stage.SYNTHESIZE.value,
+            f"{len(pending)} to synthesize · {concurrency} at a time",
+        )
+    if not pending:
+        return [made for made in out if made is not None]
+    narrator = plan.narrator
+
+    def _work(chunk: PlannedChunk) -> SynthesizedChunk:
+        events.on_chunk_started(chunk.index, total)
+
+        def _retry(wait: RetryWait) -> None:
+            events.on_retry_wait(Stage.SYNTHESIZE.value, chunk.index, wait)
+
+        pcm, sample_rate, attempts = synthesize_one(
+            engine,
+            narrator,
+            chunk.text,
+            max_retries=max_retries,
+            config=config,
+            on_retry=_retry,
+        )
+        if use_cache:
+            cache.put(
+                chunk.cache_key,
+                pcm,
+                sample_rate=sample_rate,
+                words=chunk.words,
+                usage={"engine": narrator.engine, "model": narrator.model},
+            )
+        made = SynthesizedChunk(
+            planned=chunk,
+            pcm=pcm,
+            sample_rate=sample_rate,
+            attempts=attempts,
+            cached=False,
+        )
+        made.measure()
+        events.on_chunk_finished(chunk.index, total, cached=False)
+        return made
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+        remaining = {pool.submit(_work, chunk): chunk for chunk in pending}
+        try:
+            while remaining:
+                done, _ = concurrent.futures.wait(
+                    set(remaining),
+                    timeout=0.25,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    chunk = remaining.pop(future)
+                    out[chunk.index] = future.result()
+        except BaseException:
+            for future in remaining:
+                future.cancel()
+            running = sum(1 for future in remaining if future.running())
+            if running:
+                events.on_step(
+                    Stage.SYNTHESIZE.value,
+                    f"stopping · finishing {running} in-flight chunk(s) "
+                    "so they stay cached · Ctrl-C again to quit now",
+                )
+            pool.shutdown(wait=True)
+            raise
     missing = [
         chunk.index
         for chunk, made in zip(plan.chunks, out, strict=True)
@@ -1091,8 +1317,18 @@ def _resynthesize(
 ) -> SynthesizedChunk:
     """Re-synthesize one chunk with the cache bypassed, storing the result."""
     events.on_chunk_retried(made.planned.index, made.attempts + 1, reason)
+    index = made.planned.index
+
+    def _gate_retry(wait: RetryWait) -> None:
+        events.on_retry_wait(Stage.GATES.value, index, wait)
+
     pcm, sample_rate, attempts = synthesize_one(
-        engine, narrator, made.planned.text, max_retries=max_retries, config=config
+        engine,
+        narrator,
+        made.planned.text,
+        max_retries=max_retries,
+        config=config,
+        on_retry=_gate_retry,
     )
     if use_cache:
         cache.put(
@@ -1155,7 +1391,8 @@ def run_chunk_gates(
             retried_idxs.add(made.planned.index)
         if reason is not None:
             hard_report.append(
-                f"chunk {made.planned.index} ({made.planned.kind}): {reason}"
+                f"Chunk {made.planned.index + 1} of {len(current)} "
+                f"({made.planned.kind}): {reason}"
             )
     if hard_report:
         detail = "; ".join(hard_report)
@@ -1188,7 +1425,8 @@ def run_chunk_gates(
         current[pos] = best
         kept = "re-synthesis" if best is fresh else "original"
         warnings.append(
-            f"Chunk {made.planned.index} ({made.planned.kind}): {reason}; "
+            f"Chunk {made.planned.index + 1} of {len(current)} "
+            f"({made.planned.kind}): {reason}; "
             f"re-synthesized once, kept the {kept} "
             f"({best.wpm:.0f} wpm)."
         )
@@ -1627,18 +1865,33 @@ def render(
         )
     listener = events if events is not None else RenderEvents()
     effective_config = config if config is not None else load_config()[0]
+    tentative_kind = "article" if looks_like_url(request.source) else None
+    listener.on_stages(
+        _stage_values(expected_stages(request, effective_config, tentative_kind))
+    )
     loaded = load_source(
         request.source,
         edition=request.edition,
         html_file=request.html,
         refresh=request.refresh,
         config=effective_config,
+        events=listener,
     )
+    real_kind = loaded.script.meta.kind
+    listener.on_stages(
+        _stage_values(expected_stages(request, effective_config, real_kind))
+    )
+    listener.on_stage(Stage.PLAN.value)
+    listener.on_step(Stage.PLAN.value, "resolving the narrator and API key")
     prepared = prepare(request, config=effective_config, engine=engine, cache=cache)
     cfg = prepared.config
+    listener.on_step(
+        Stage.PLAN.value, f"splitting {loaded.script.words()} words into chunks"
+    )
     plan = plan_request(request, prepared, loaded)
     listener.on_plan(plan)
     if request.dry_run:
+        listener.on_stage_done(Stage.PLAN.value, summarize_plan(plan))
         return plan
     if not loaded.script.chapters:
         raise SaseListenError(
@@ -1648,6 +1901,7 @@ def render(
         )
     use_cache = not request.no_cache
     meta = loaded.script.meta
+    listener.on_step(Stage.PLAN.value, "preparing cover art")
     cover_jpeg = resolve_cover_bytes(
         loaded,
         cover_option=request.cover,
@@ -1656,8 +1910,9 @@ def render(
         date_text=format_spoken_date(meta.date) if meta.date.strip() else "",
         generated_cover=request.generated_cover,
     )
+    listener.on_stage_done(Stage.PLAN.value, summarize_plan(plan))
+    listener.on_stage(Stage.SYNTHESIZE.value)
     with episode_lock(plan.episode_id):
-        listener.on_stage("synthesize")
         synthesized = synthesize_chunks(
             plan,
             prepared.engine,
@@ -1668,7 +1923,18 @@ def render(
             events=listener,
             config=cfg,
         )
-        listener.on_stage("gates")
+        synth_cached = sum(1 for made in synthesized if made.cached)
+        synth_made = len(synthesized) - synth_cached
+        synth_retries = sum(
+            max(0, made.attempts - 1) for made in synthesized if not made.cached
+        )
+        listener.on_stage_done(
+            Stage.SYNTHESIZE.value,
+            summarize_synthesize(
+                synth_made, synth_cached, synth_retries, total=len(synthesized)
+            ),
+        )
+        listener.on_stage(Stage.GATES.value)
         final, gate_warnings, retried = run_chunk_gates(
             synthesized,
             prepared.engine,
@@ -1679,13 +1945,26 @@ def render(
             events=listener,
             config=cfg,
         )
-        listener.on_stage("master")
+        listener.on_stage_done(
+            Stage.GATES.value,
+            summarize_gates(len(final), retried, warnings=gate_warnings),
+            warning=bool(gate_warnings),
+        )
+        listener.on_stage(Stage.MASTER.value)
+        listener.on_step(
+            Stage.MASTER.value, f"assembling {len(loaded.script.chapters)} chapter(s)"
+        )
         pcm, starts, sample_rate = assemble_episode(final, plan, cfg)
         ffmpeg = resolve_ffmpeg()
         slug = slugify(plan.title)
         mp3_name = episode_mp3_name(slug)
         staging = staging_path(plan.episode_id, library_root) / "master.mp3"
         staging.parent.mkdir(parents=True, exist_ok=True)
+        master_listener = listener
+
+        def _master_step(text: str) -> None:
+            master_listener.on_step(Stage.MASTER.value, text)
+
         stats = master_to_mp3(
             pcm,
             sample_rate,
@@ -1694,6 +1973,7 @@ def render(
             target_lufs=cfg.audio.loudness_lufs,
             true_peak_db=cfg.audio.true_peak_db,
             bitrate_kbps=cfg.audio.bitrate_kbps,
+            on_step=_master_step,
         )
         expected_s = len(pcm) / sample_rate
         duration_ms = round(expected_s * 1000)
@@ -1711,7 +1991,7 @@ def render(
                 zip([c.title for c in loaded.script.chapters], starts, strict=True)
             )
         ]
-        listener.on_stage("tag")
+        listener.on_step(Stage.MASTER.value, "writing chapters and cover art")
         write_tags(
             staging,
             EpisodeMeta(
@@ -1731,7 +2011,13 @@ def render(
             duration_ms,
             cover_jpeg=cover_jpeg,
         )
-        listener.on_stage("commit")
+        tagged_size = staging.stat().st_size
+        listener.on_stage_done(
+            Stage.MASTER.value,
+            summarize_master(expected_s, stats.loudness_lufs, tagged_size),
+        )
+        listener.on_stage(Stage.SAVE.value)
+        listener.on_step(Stage.SAVE.value, "verifying the MP3")
         gates, size_warnings = run_episode_gates(
             staging,
             expected_duration_s=expected_s,
@@ -1847,26 +2133,38 @@ def render(
             "manifest.json": dumps_manifest(manifest_payload),
         }
         staged_mp3_size = len(payloads[mp3_name])
+        listener.on_step(Stage.SAVE.value, "saving to the library")
         final_dir = atomic_commit(plan.episode_id, payloads, library_root)
+        copied_name = ""
         if request.output:
             out_path = Path(request.output).expanduser()
+            listener.on_step(Stage.SAVE.value, f"copying to {out_path}")
             if out_path.parent != Path("."):
                 out_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_out = out_path.with_name(f".tmp-{out_path.name}")
             shutil.copyfile(final_dir / mp3_name, tmp_out)
             shutil.move(str(tmp_out), str(out_path))
+            copied_name = out_path.name
+        listener.on_step(Stage.SAVE.value, "pruning the chunk cache")
         prepared.cache.prune()
-    want_publish = (
-        request.publish
-        if request.publish is not None
-        else (cfg.feed.auto_publish and meta.kind in {"research", "article"})
-    )
+        listener.on_stage_done(
+            Stage.SAVE.value,
+            summarize_save(len(loaded.script.chapters), copied_name=copied_name),
+        )
     published = False
     publish_queued = False
     publish_host = ""
-    if want_publish:
+    if should_publish(request, cfg, real_kind):
+        listener.on_stage(Stage.PUBLISH.value)
+        publish_listener = listener
+
+        def _publish_step(text: str) -> None:
+            publish_listener.on_step(Stage.PUBLISH.value, text)
+
         try:
-            published_info = publish_any(plan.episode_id, cfg, library=library_root)
+            published_info = publish_any(
+                plan.episode_id, cfg, library=library_root, on_step=_publish_step
+            )
         except SaseListenError as exc:
             if feed_role(cfg) == "remote":
                 queue_publish(plan.episode_id, str(exc))
@@ -1884,14 +2182,27 @@ def render(
                     f"Auto-publish to {host} failed ({exc}); queued — "
                     "run `sase-listen publish --pending`"
                 )
+                listener.on_stage_done(
+                    Stage.PUBLISH.value, f"queued · {exc}", warning=True
+                )
             elif request.publish:
                 raise
             else:
                 warnings.append(f"Auto-publish skipped: {exc}")
+                listener.on_stage_done(
+                    Stage.PUBLISH.value, f"skipped · {exc}", warning=True
+                )
         else:
             mark_manifest_published(plan.episode_id, library_root)
             published = True
             publish_host = str(published_info.get("host") or "")
+            via = str(published_info.get("via") or "")
+            if via and via != "local":
+                listener.on_stage_done(
+                    Stage.PUBLISH.value, f"{publish_host} (via {via})"
+                )
+            else:
+                listener.on_stage_done(Stage.PUBLISH.value, "local feed")
     result = RenderResult(
         episode_id=plan.episode_id,
         title=plan.title,

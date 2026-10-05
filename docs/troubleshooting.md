@@ -1,5 +1,14 @@
 # Troubleshooting
 
+## Progress output is garbled or too chatty
+
+The live checklist assumes a responsive terminal. When it flickers, wraps
+badly, or hides the lines you care about, drop one level:
+`--progress plain` writes one line per event with no ANSI escapes, and
+`--progress off` silences stderr progress entirely (the finished checklist
+still prints to stdout with the summary). These flags exist on `render`
+and, for URL sources, on `script`.
+
 ## `API_KEY_INVALID` / rejected credentials (exit 3)
 
 Gemini rejected the API key (HTTP 400 `API_KEY_INVALID`, or 401/403). The
@@ -44,7 +53,7 @@ Transient API errors are retried with backoff; persistent failure exits 4.
 Check the network, confirm the key works, and try a cheaper narrator
 (`gemini-lite`) or `--no-cache` to rule out a poisoned cache entry.
 
-## `Invalid cross-device link` at `stage: master`
+## `Invalid cross-device link` while mastering (`Master audio`)
 
 The mastered MP3 was encoded under the system temp dir (`/tmp`, often
 tmpfs) and renamed into the library, but `rename(2)` fails with EXDEV
@@ -52,8 +61,9 @@ across filesystems. Releases with the beside-the-target mastering fix are
 immune: upgrade with `uv tool install --force sase-listen` (or
 `uv tool install --force git+https://github.com/sase-org/sase-listen`),
 then re-run the same `render` command. Synthesized chunks and article
-scripts are cached, so it goes straight to master/tag/commit/publish with
-no new TTS or writer calls.
+scripts are cached, so it goes straight to master/save/publish with
+no new TTS or writer calls. (The stage now shows as `Master audio` in
+the live checklist.)
 
 ## `doctor --online` reports `online check not implemented yet`
 

@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 from sase_listen import __version__
+from sase_listen.cli.progress import activity
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.engines.secrets import describe_api_key_source
 from sase_listen.errors import ExitCode, SaseListenError
@@ -50,7 +51,9 @@ def _ffmpeg_info() -> dict[str, Any]:
     }
 
 
-def _run_checks(*, online: bool) -> tuple[list[dict[str, Any]], bool]:
+def _run_checks(
+    *, online: bool, allow_activity: bool = True
+) -> tuple[list[dict[str, Any]], bool]:
     checks: list[dict[str, Any]] = []
     ok = True
 
@@ -139,7 +142,7 @@ def _run_checks(*, online: bool) -> tuple[list[dict[str, Any]], bool]:
             ok = False
 
     before = len(checks)
-    _feed_checks(cfg, checks)
+    _feed_checks(cfg, checks, allow_activity=allow_activity)
     ok = ok and all(item["ok"] for item in checks[before:])
     checks.append({"name": "version", "ok": True, "detail": __version__})
     return checks, ok
@@ -158,10 +161,13 @@ def _outbox_check(checks: list[dict[str, Any]]) -> None:
     )
 
 
-def _remote_host_check(cfg: SaseListenConfig, checks: list[dict[str, Any]]) -> None:
+def _remote_host_check(
+    cfg: SaseListenConfig, checks: list[dict[str, Any]], *, allow_activity: bool = True
+) -> None:
     host = cfg.feed.host.strip()
     try:
-        status, dest = run_remote(cfg, ["feed", "--json"])
+        with activity(f"Checking feed host {host}…", enabled=allow_activity) as act:
+            status, dest = run_remote(cfg, ["feed", "--json"], on_attempt=act.update)
     except SaseListenError as exc:
         checks.append({"name": "feed:host", "ok": False, "detail": str(exc)})
         return
@@ -179,7 +185,12 @@ def _remote_host_check(cfg: SaseListenConfig, checks: list[dict[str, Any]]) -> N
     )
 
 
-def _feed_checks(cfg: SaseListenConfig | None, checks: list[dict[str, Any]]) -> None:
+def _feed_checks(
+    cfg: SaseListenConfig | None,
+    checks: list[dict[str, Any]],
+    *,
+    allow_activity: bool = True,
+) -> None:
     """Append the four feed checks (feed phase).
 
     An untouched feed (no base_url, no token, nothing published) reports
@@ -200,7 +211,7 @@ def _feed_checks(cfg: SaseListenConfig | None, checks: list[dict[str, Any]]) -> 
         return
     _outbox_check(checks)
     if feed_role(cfg) == "remote":
-        _remote_host_check(cfg, checks)
+        _remote_host_check(cfg, checks, allow_activity=allow_activity)
         return
     checks.append({"name": "feed:host", "ok": True, "detail": "this machine"})
     root = feed_root(cfg)
@@ -285,8 +296,11 @@ def add_parser(
 
 def run(args: argparse.Namespace) -> int:
     """Run offline checks (feed phase adds feed checks)."""
-    checks, ok = _run_checks(online=bool(getattr(args, "online", False)))
-    if getattr(args, "json", False):
+    as_json = bool(getattr(args, "json", False))
+    checks, ok = _run_checks(
+        online=bool(getattr(args, "online", False)), allow_activity=not as_json
+    )
+    if as_json:
         print(json.dumps({"ok": ok, "checks": checks}))
     else:
         for item in checks:

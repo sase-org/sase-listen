@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 
+from sase_listen.cli.progress import activity
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.feed import (
@@ -170,7 +171,11 @@ def _run_status(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
             remote_args = ["feed", "--json"]
             if show or want_qr:
                 remote_args.append("--show-url")
-            status, dest = run_remote(cfg, remote_args)
+            host = cfg.feed.host.strip()
+            with activity(
+                f"Asking {host} for the feed status…", enabled=not as_json
+            ) as act:
+                status, dest = run_remote(cfg, remote_args, on_attempt=act.update)
             via = dest
             qr_url = str(status.get("url") or "")
             if not show and qr_url and "/****/" not in qr_url:
@@ -213,7 +218,13 @@ def _run_rebuild(
         refuse_if_misrouted(cfg)
         if feed_role(cfg) == "remote":
             action = "prune" if prune_only else "rebuild"
-            result, dest = run_remote(cfg, ["feed", action, "--json"])
+            host = cfg.feed.host.strip()
+            with activity(
+                f"Asking {host} to {action} the feed…", enabled=not as_json
+            ) as act:
+                result, dest = run_remote(
+                    cfg, ["feed", action, "--json"], on_attempt=act.update
+                )
             result["via"] = dest
             result["host"] = cfg.feed.host.strip()
         else:

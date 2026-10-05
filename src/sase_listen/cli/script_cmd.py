@@ -10,10 +10,26 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from sase_listen.cli.progress import (
+    LiveProgress,
+    build_progress,
+    interrupt_guard,
+    resolve_mode,
+)
 from sase_listen.errors import ExitCode, SaseListenError
+from sase_listen.events import RenderEvents
 from sase_listen.normalize import normalize_markdown
-from sase_listen.pipeline import load_source, looks_like_url
+from sase_listen.pipeline import (
+    LoadedSource,
+    load_source,
+    looks_like_url,
+    source_stages,
+)
 from sase_listen.script import parse_script_text
+
+
+class _Interrupted(Exception):
+    """Internal control flow for script interrupts (maps to exit 130)."""
 
 
 def add_parser(
@@ -39,6 +55,12 @@ def add_parser(
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.add_argument("-o", "--output", default="", help="Write the script to PATH.")
     p.add_argument(
+        "--progress",
+        choices=("auto", "live", "plain", "off"),
+        default="auto",
+        help="Progress display: live checklist, plain lines, or off (default: auto).",
+    )
+    p.add_argument(
         "-r",
         "--refresh",
         action="store_true",
@@ -49,16 +71,74 @@ def add_parser(
     return p
 
 
+def _fetch_source(
+    args: argparse.Namespace, events: RenderEvents | None
+) -> LoadedSource:
+    """Fetch the URL source, announcing the expected source stages first."""
+    if events is not None:
+        events.on_stages(
+            [stage.value for stage in source_stages(str(args.source), args.edition)]
+        )
+    return load_source(
+        args.source,
+        edition=args.edition,
+        html_file=args.html or "",
+        refresh=bool(args.refresh),
+        events=events,
+    )
+
+
+def _load_url_source(args: argparse.Namespace) -> LoadedSource:
+    """Load a URL source under the requested progress display."""
+    as_json = bool(args.json)
+    probe = Console(stderr=True, highlight=False, emoji=False, markup=False)
+    mode = resolve_mode(
+        str(getattr(args, "progress", "auto") or "auto"),
+        as_json=as_json,
+        console=probe,
+    )
+    display = None if as_json else build_progress(mode, str(args.source))
+
+    def _force_quit() -> None:
+        if display is not None:
+            display.force_stop()
+        print(
+            "\u25a0 Stopped immediately.",
+            file=sys.stderr,
+        )
+
+    try:
+        with interrupt_guard(_force_quit):
+            if isinstance(display, LiveProgress):
+                with display:
+                    return _fetch_source(args, display)
+            return _fetch_source(args, display)
+    except KeyboardInterrupt:
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": 130,
+                            "message": "Interrupted.",
+                            "hint": "Re-run the same command to try again.",
+                        },
+                    }
+                )
+            )
+        else:
+            print("\u25a0 sase-listen script interrupted (exit 130)", file=sys.stderr)
+        raise _Interrupted from None
+
+
 def run(args: argparse.Namespace) -> int:
     """Normalize Markdown into an edition: verbatim narration script."""
     if looks_like_url(args.source):
         try:
-            loaded = load_source(
-                args.source,
-                edition=args.edition,
-                html_file=args.html or "",
-                refresh=bool(args.refresh),
-            )
+            loaded = _load_url_source(args)
+        except _Interrupted:
+            return int(ExitCode.INTERRUPTED)
         except SaseListenError as exc:
             if args.json:
                 print(

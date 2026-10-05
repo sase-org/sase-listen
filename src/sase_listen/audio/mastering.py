@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -331,6 +332,7 @@ def master_to_mp3(
     target_lufs: float = -16.0,
     true_peak_db: float = -1.5,
     bitrate_kbps: int = 64,
+    on_step: Callable[[str], None] | None = None,
 ) -> MasterStats:
     """Two-pass loudnorm to a 64 kb/s mono MP3 with atomic replace.
 
@@ -349,6 +351,8 @@ def master_to_mp3(
     with tempfile.TemporaryDirectory(prefix="sase-listen-master-") as tmp:
         wav_path = str(Path(tmp) / "episode.wav")
         write_wav(pcm, sample_rate, wav_path)
+        if on_step is not None:
+            on_step("measuring loudness (pass 1 of 2)")
         pass1 = _run_ffmpeg(
             [
                 ffmpeg.exe,
@@ -382,6 +386,8 @@ def master_to_mp3(
         fd, staging = tempfile.mkstemp(dir=out.parent, prefix=".tmp-", suffix=".mp3")
         os.close(fd)
         try:
+            if on_step is not None:
+                on_step("encoding the MP3 (pass 2 of 2)")
             pass2 = _run_ffmpeg(
                 [
                     ffmpeg.exe,

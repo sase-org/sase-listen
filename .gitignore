@@ -62,3 +62,6 @@ CLAUDE.local.md
 -e 
 # MkDocs
 site/
+
+# The committed render-progress screenshot overrides the global *.svg ignore.
+!docs/assets/render-progress.svg

@@ -13,6 +13,7 @@ class ExitCode(IntEnum):
     SYNTHESIS_FAILED = 4
     QUALITY_GATE_FAILED = 5
     SCRIPT_STRUCTURAL = 6
+    INTERRUPTED = 130
 
 
 class SaseListenError(Exception):

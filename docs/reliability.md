@@ -38,4 +38,16 @@
   id rejects concurrent renders of the same episode instead of clobbering.
 - **Exit codes:** 0 ok, 1 unexpected, 2 usage, 3 config/credentials,
   4 synthesis failed after retries, 5 quality gate failed, 6 structural lint
-  errors (`render` refuses unless `--force`).
+  errors (`render` refuses unless `--force`), 130 interrupted by Ctrl-C.
+- **Interrupts:** the first Ctrl-C stops queueing new chunks while running
+  chunks finish and cache themselves, then exits 130 with a resume hint
+  tuned to the stage (before synthesis: nothing was rendered yet; during
+  synthesis and gates: `N of M chunks are cached`; during master and save:
+  all chunks are cached; during publish: the episode is saved, publish it
+  with `sase-listen publish`). A second Ctrl-C quits immediately without
+  waiting for the cache writes. Every paid chunk survives the first press,
+  so re-running the same command resumes without paying for it again.
+- **Progress can never fail a render:** every progress event handler and
+  view build runs behind a guard. The first internal display error
+  disables the display, prints one dim `progress display error` line, and
+  the render continues unaffected.

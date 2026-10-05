@@ -113,4 +113,4 @@ show_missing = true
 skip_covered = false
 
 [tool.codespell]
-skip = ".venv,uv.lock,*.svg,*.mp3,node_modules"
+skip = ".venv,uv.lock,*.svg,*.mp3,node_modules,site"

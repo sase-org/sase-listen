@@ -672,17 +672,26 @@ def test_default_config_tone_engine() -> None:
 
 
 def test_human_output_paths(isolated: Path, tmp_path: Path, capsys) -> None:
-    from sase_listen.cli import render as render_cmd
+    from sase_listen.cli.progress import PlainProgress
+    from sase_listen.engines.retry import RetryWait
 
-    events = render_cmd._ProgressEvents()
-    events.on_plan(None)  # type: ignore[arg-type]
+    events = PlainProgress("notes.md")
+    events.on_title("Notes")
+    events.on_stage("synthesize")
     events.on_chunk_started(0, 2)
     events.on_chunk_finished(0, 2, cached=True)
-    events.on_chunk_retried(1, 1, "soft gate: slow")
+    events.on_chunk_started(1, 2)
+    events.on_retry_wait(
+        "synthesize",
+        1,
+        RetryWait(attempt=1, max_retries=4, delay_s=14.0, reason="slow"),
+    )
+    events.on_chunk_finished(1, 2, cached=False)
+    events.on_stage_done("synthesize", "1 synthesized · 1 cached · 0 retries")
     events.on_stage("gates")
-    events.on_done(None)  # type: ignore[arg-type]
     err = capsys.readouterr().err
-    assert "chunk 0" in err and "retry 1" in err and "stage: gates" in err
+    assert "chunk 2 of 2" in err and "retry 1 of 4 in 14s" in err
+    assert "1 chunk cached" in err and "Synthesize" in err
 
     source = _write(
         tmp_path,

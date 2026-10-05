@@ -1,19 +1,30 @@
-"""render command: Markdown to MP3 episode. Owner: pipeline phase (UX: cli phase).
-
-Human output stays plain here; the cli phase owns the rich experience and
-renders progress from the pipeline's event protocol without touching the
-orchestration.
-"""
+"""render command: Markdown to MP3 episode. Owner: pipeline phase (UX: cli phase)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import time
+from collections.abc import Sequence
 
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
+from sase_listen.cli.progress import (
+    LiveProgress,
+    ProgressState,
+    Snapshot,
+    build_progress,
+    build_view,
+    interrupt_guard,
+    resolve_mode,
+)
+from sase_listen.engines.retry import RetryWait
 from sase_listen.errors import ExitCode, SaseListenError
+from sase_listen.events import RenderEvents, Stage
 from sase_listen.pipeline import (
-    RenderEvents,
     RenderPlan,
     RenderRequest,
     RenderResult,
@@ -22,6 +33,7 @@ from sase_listen.pipeline import (
     render,
     result_to_json,
 )
+from sase_listen.ui import GLYPH_AUDIO, approx_cost, format_duration
 
 
 def add_parser(
@@ -68,6 +80,12 @@ def add_parser(
     pub.add_argument("--publish", dest="publish", action="store_true", default=None)
     pub.set_defaults(publish=None)
     p.add_argument(
+        "--progress",
+        choices=("auto", "live", "plain", "off"),
+        default="auto",
+        help="Progress display: live checklist, plain lines, or off (default: auto).",
+    )
+    p.add_argument(
         "-r",
         "--refresh",
         action="store_true",
@@ -79,88 +97,288 @@ def add_parser(
     return p
 
 
-class _ProgressEvents(RenderEvents):
-    """Plain human progress lines for the pre-cli-phase experience."""
+class _Fanout(RenderEvents):
+    """Forward every event to each sink (display plus state tracking)."""
 
-    def on_chunk_finished(self, index: int, total: int, *, cached: bool) -> None:
-        """Report each finished chunk to stderr."""
-        tag = "cached" if cached else "synthesized"
-        print(f"[{index + 1}/{total}] chunk {index} {tag}", file=sys.stderr)
+    def __init__(self, sinks: list[RenderEvents]) -> None:
+        self._sinks = sinks
 
-    def on_chunk_retried(self, index: int, attempt: int, reason: str) -> None:
-        """Report each retry to stderr."""
-        print(f"chunk {index}: retry {attempt} ({reason})", file=sys.stderr)
+    def on_stages(self, stages: Sequence[str]) -> None:
+        """Announce (or refine) the full stage list."""
+        for sink in self._sinks:
+            sink.on_stages(stages)
 
     def on_stage(self, stage: str) -> None:
-        """Report stage changes to stderr."""
-        print(f"stage: {stage}", file=sys.stderr)
+        """Mark a stage as started."""
+        for sink in self._sinks:
+            sink.on_stage(stage)
+
+    def on_step(self, stage: str, text: str) -> None:
+        """Update the live sub-step text for a stage."""
+        for sink in self._sinks:
+            sink.on_step(stage, text)
+
+    def on_stage_done(
+        self, stage: str, summary: str = "", *, warning: bool = False
+    ) -> None:
+        """Mark a stage as done with a short summary."""
+        for sink in self._sinks:
+            sink.on_stage_done(stage, summary, warning=warning)
+
+    def on_title(self, title: str) -> None:
+        """Report the source title once known."""
+        for sink in self._sinks:
+            sink.on_title(title)
+
+    def on_plan(self, plan: RenderPlan) -> None:
+        """Record header facts and the chunk chapter map."""
+        for sink in self._sinks:
+            sink.on_plan(plan)
+
+    def on_chunk_started(self, index: int, total: int) -> None:
+        """Record a chunk request that really began."""
+        for sink in self._sinks:
+            sink.on_chunk_started(index, total)
+
+    def on_chunk_finished(self, index: int, total: int, *, cached: bool) -> None:
+        """Record a chunk with audio (cached or synthesized)."""
+        for sink in self._sinks:
+            sink.on_chunk_finished(index, total, cached=cached)
+
+    def on_chunk_retried(self, index: int, attempt: int, reason: str) -> None:
+        """Note a gate re-synthesis."""
+        for sink in self._sinks:
+            sink.on_chunk_retried(index, attempt, reason)
+
+    def on_retry_wait(self, stage: str, chunk: int | None, wait: RetryWait) -> None:
+        """Record a pending backoff sleep."""
+        for sink in self._sinks:
+            sink.on_retry_wait(stage, chunk, wait)
+
+    def on_done(self, result: RenderResult) -> None:
+        """Record completion."""
+        for sink in self._sinks:
+            sink.on_done(result)
+
+
+def _stage_label(stage: str, source: str) -> str:
+    from sase_listen.cli.progress import STAGE_LABELS, source_stage_label
+
+    if stage == Stage.SOURCE.value:
+        return source_stage_label(source)
+    return STAGE_LABELS.get(stage, stage)
 
 
 def _print_plan(plan: RenderPlan) -> None:
-    """Print the dry-run plan as plain human text."""
-    print(f"Title: {plan.title}")
-    print(f"Source: {plan.source_label}")
+    """Print the dry-run plan as a Rich layout."""
+    console = Console(highlight=False, emoji=False, markup=False)
+    console.print(f"{GLYPH_AUDIO} {plan.title}", style="bold")
     narrator = plan.narrator
-    print(
-        f"Narrator: {narrator.name} "
-        f"({narrator.engine} / {narrator.model or '-'} / {narrator.voice or '-'})"
+    facts = (
+        f"{plan.source_label} \u00b7 {plan.edition} edition \u00b7 "
+        f"{narrator.voice or narrator.name} \u00b7 {narrator.model}"
     )
-    print(f"Edition: {plan.edition}  Producer: {plan.producer}")
-    print(f"Words: {plan.words}  About: {plan.estimated_duration_s / 60:.1f} min")
+    console.print(f"  {facts}", style="dim")
+    console.print("")
+    words_min = plan.estimated_duration_s / 60
+    console.print(
+        f"Facts: {plan.words:,} words \u00b7 about {words_min:.1f} min \u00b7 "
+        f"{len(plan.chunks)} chunks "
+        f"({plan.cached_chunks} cached, {plan.synthesis_needed} to synthesize) \u00b7 "
+        f"about ${plan.estimated_cost_usd:.4f}"
+    )
     writer_usage = plan.writer.get("tokens", {})
     if plan.writer and isinstance(writer_usage, dict):
-        print(
+        console.print(
             f"Writer usage: {writer_usage.get('input', 0)} input + "
             f"{writer_usage.get('output', 0)} output tokens; billed separately."
         )
-    print(
-        f"Chunks: {len(plan.chunks)} "
-        f"({plan.cached_chunks} cached, {plan.synthesis_needed} to synthesize)"
-    )
-    print(f"Cost: about ${plan.estimated_cost_usd:.4f}")
-    print("Chapters:")
+    if plan.script_path:
+        console.print(f"Script: {plan.script_path}")
+    console.print("Chapters:")
+    table = Table(box=None, show_header=True, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Title", overflow="ellipsis")
+    table.add_column("Words", justify="right", no_wrap=True)
+    table.add_column("~min", justify="right", no_wrap=True)
+    table.add_column("Chunks", justify="right", no_wrap=True)
     for number, chapter in enumerate(plan.chapter_plans, start=1):
-        print(
-            f"  {number}. {chapter.title} "
-            f"({chapter.words} words, about {chapter.words / 150:.1f} min, "
-            f"{chapter.chunks} chunks)"
+        table.add_row(
+            str(number),
+            Text(chapter.title),
+            str(chapter.words),
+            f"{chapter.words / 150:.1f}",
+            str(chapter.chunks),
         )
+    console.print(table)
     if plan.omissions:
-        print(f"Omissions ({len(plan.omissions)}):")
+        console.print(f"Omissions ({len(plan.omissions)}):")
         for omission in plan.omissions:
-            print(f"  - {omission.type}: {omission.detail} (line {omission.line})")
+            console.print(
+                f"  - {omission.type}: {omission.detail} (line {omission.line})"
+            )
     if plan.warnings:
-        print("Warnings:")
+        console.print("Warnings:")
         for warning in plan.warnings:
-            print(f"  ! {warning}")
+            console.print(f"  ! {warning}")
 
 
-def _print_result(result: RenderResult) -> None:
-    """Print the finished render as plain human text."""
-    print(f"Done: {result.title}")
-    print(f"MP3: {result.audio_path}")
-    minutes = result.duration_s / 60
-    print(
-        f"Duration: {result.duration_s:.1f} s ({minutes:.1f} min)  "
-        f"Size: {result.size_bytes} bytes  "
-        f"Chapters: {len(result.chapters)}  "
-        f"LUFS: {result.loudness_lufs:.1f}"
-    )
-    print(
-        f"Chunks: {result.total_chunks} "
-        f"({result.cached_chunks} cached, "
-        f"{result.synthesized_chunks} synthesized, "
-        f"{result.retried_chunks} retried)"
-    )
-    print(f"Cost: about ${result.cost_usd_estimate:.4f}")
+def _is_remote_publish() -> bool:
+    """Return True when the feed role is remote (best effort)."""
+    try:
+        from sase_listen.config import load_config
+        from sase_listen.feedhost import feed_role
+
+        cfg, _ = load_config()
+    except Exception:
+        return False
+    try:
+        return feed_role(cfg) == "remote"
+    except Exception:
+        return False
+
+
+def _print_final_frame(state: ProgressState, now: float) -> None:
+    """Print the finished checklist to stdout (plain/off modes)."""
+    from dataclasses import replace
+
+    console = Console(highlight=False, emoji=False, markup=False)
+    snapshot = replace(state.snapshot(now), final=True)
+    width = console.width or 80
+    console.print(build_view(snapshot, now, width))
+
+
+def _print_result(
+    result: RenderResult, *, live: bool, elapsed_s: float, output: str = ""
+) -> None:
+    """Print the finished render summary to stdout."""
+    console = Console(highlight=False, emoji=False, markup=False)
+    audio_min = result.duration_s / 60
+    if audio_min < 1:
+        audio_text = f"{result.duration_s:.0f}s of audio"
+    else:
+        audio_text = f"{format_duration(result.duration_s)} of audio"
+    parts = [f"Ready in {format_duration(elapsed_s)}", audio_text]
+    if result.cost_usd_estimate > 0:
+        parts.append(approx_cost(result.cost_usd_estimate))
+    head = Text()
+    head.append(f"{GLYPH_AUDIO} {' \u00b7 '.join(parts)}", style="bold green")
+    if not live:
+        head.append(f" \u2014 {result.title}", style="bold green")
+    console.print(head)
+    console.print(f"  {result.audio_path}", soft_wrap=True)
     if result.published:
-        print("Published to feed.")
-    for warning in result.warnings:
-        print(f"! {warning}")
+        if result.publish_host and _is_remote_publish():
+            console.print(
+                f"  Published to {result.publish_host} \u2014 refresh the feed "
+                "in AntennaPod to download it."
+            )
+        else:
+            console.print("  Published to the local feed.")
+    elif result.publish_queued:
+        console.print(
+            "  \u26a0 Publish queued \u2014 run sase-listen publish --pending",
+            style="yellow",
+        )
+    if output:
+        console.print(f"  Copied to {output}")
+    warnings = [
+        warning for warning in result.warnings if "queued \u2014" not in warning
+    ]
+    if warnings:
+        noun = "warning" if len(warnings) == 1 else "warnings"
+        console.print(f"  \u26a0 {len(warnings)} {noun}", style="yellow")
+        for warning in warnings:
+            console.print(f"    \u00b7 {warning}")
+
+
+def _failure_lines(
+    message: str,
+    hint: str,
+    state: ProgressState,
+    now: float,
+    source: str,
+    code: int,
+    *,
+    kind: str,
+) -> list[str]:
+    """Build the stderr failure or interrupt block lines."""
+    snapshot = state.snapshot(now)
+    stage = snapshot.active_stage
+    if not stage:
+        for row in reversed(snapshot.rows):
+            if row.status in ("failed", "interrupted", "active", "done", "warning"):
+                stage = row.id
+                break
+    lines: list[str] = []
+    if kind == "interrupt":
+        head = "\u25a0 sase-listen render interrupted"
+    else:
+        head = "\u2717 sase-listen render failed"
+    if stage:
+        head += f" during {_stage_label(stage, source)}"
+    head += f" (exit {code})"
+    lines.append(head)
+    first = message.splitlines()[0] if message.strip() else ""
+    if first and kind != "interrupt":
+        lines.append(f"  {first}")
+    cache_line = _cache_line(snapshot, kind=kind)
+    for hint_line in _hint_lines(kind, stage, snapshot, has_cache=bool(cache_line)):
+        lines.append(f"  {hint_line}")
+    if hint and kind != "interrupt":
+        lines.append(f"  hint: {hint}")
+    if cache_line:
+        lines.append(f"  {cache_line}")
+    return lines
+
+
+def _hint_lines(
+    kind: str, stage: str, snapshot: Snapshot, *, has_cache: bool
+) -> list[str]:
+    if kind != "interrupt":
+        return []
+    if stage in (Stage.SYNTHESIZE.value, Stage.GATES.value):
+        if has_cache:
+            return []
+        return ["Nothing was rendered yet; re-run to start again."]
+    if stage == Stage.MASTER.value or stage == Stage.SAVE.value:
+        return ["All chunks are cached; re-run to finish without new synthesis."]
+    if stage == Stage.PUBLISH.value:
+        episode = snapshot.episode_id
+        if episode:
+            return [
+                "The episode is saved in your library; publish it with "
+                f"`sase-listen publish {episode}`."
+            ]
+        return ["The episode is saved in your library; publish it when ready."]
+    if stage == Stage.WRITE.value:
+        return [
+            "Nothing was rendered yet; re-run to start again. "
+            "The fetched article is cached."
+        ]
+    return ["Nothing was rendered yet; re-run to start again."]
+
+
+def _cache_line(snapshot: Snapshot, *, kind: str) -> str:
+    at_or_after_synth = any(
+        row.id == Stage.SYNTHESIZE.value and row.status != "pending"
+        for row in snapshot.rows
+    )
+    if not at_or_after_synth or snapshot.cached < 1 or snapshot.total < 1:
+        return ""
+    if kind == "interrupt":
+        return (
+            f"{snapshot.cached} of {snapshot.total} chunks are cached \u2014 "
+            "re-run the same command to resume without paying for them again."
+        )
+    return (
+        f"{snapshot.cached} of {snapshot.total} chunks are cached, "
+        "so re-running will not synthesize them again."
+    )
 
 
 def run(args: argparse.Namespace) -> int:
-    """Render a source into an episode (plain output or one JSON object)."""
+    """Render a source into an episode (live checklist or one JSON object)."""
     request = RenderRequest(
         source=args.source,
         output=args.output or "",
@@ -177,21 +395,14 @@ def run(args: argparse.Namespace) -> int:
         generated_cover=bool(getattr(args, "generated_cover", False)),
     )
     as_json = bool(args.json)
-    events = None if as_json else _ProgressEvents()
-    try:
-        outcome = render(request, events=events)
-    except SaseListenError as exc:
-        if as_json:
+    started = time.monotonic()
+    if as_json:
+        try:
+            outcome = render(request)
+        except SaseListenError as exc:
             print(json.dumps(error_to_json(exc)))
-        else:
-            print(f"sase-listen render: error: {exc}", file=sys.stderr)
-            if exc.hint:
-                print(f"hint: {exc.hint}", file=sys.stderr)
-        return int(exc.code)
-    except ValueError as exc:
-        # Config validation surfaces as ValueError; that is exit 3.
-        message = f"sase-listen render: error: {exc}"
-        if as_json:
+            return int(exc.code)
+        except ValueError as exc:
             print(
                 json.dumps(
                     {
@@ -200,11 +411,24 @@ def run(args: argparse.Namespace) -> int:
                     }
                 )
             )
-        else:
-            print(message, file=sys.stderr)
-        return int(ExitCode.CONFIG)
-    except Exception as exc:
-        if as_json:
+            return int(ExitCode.CONFIG)
+        except KeyboardInterrupt:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": 130,
+                            "message": "Interrupted.",
+                            "hint": (
+                                "Re-run the same command; finished chunks are cached."
+                            ),
+                        },
+                    }
+                )
+            )
+            return int(ExitCode.INTERRUPTED)
+        except Exception as exc:
             print(
                 json.dumps(
                     {
@@ -217,17 +441,96 @@ def run(args: argparse.Namespace) -> int:
                     }
                 )
             )
-        else:
-            print(f"sase-listen render: unexpected error: {exc}", file=sys.stderr)
-        return int(ExitCode.UNEXPECTED)
-    if isinstance(outcome, RenderPlan):
-        if as_json:
+            return int(ExitCode.UNEXPECTED)
+        if isinstance(outcome, RenderPlan):
             print(json.dumps(plan_to_json(outcome)))
         else:
-            _print_plan(outcome)
+            print(json.dumps(result_to_json(outcome)))
         return int(ExitCode.OK)
-    if as_json:
-        print(json.dumps(result_to_json(outcome)))
-    else:
-        _print_result(outcome)
+
+    probe = Console(stderr=True, highlight=False, emoji=False, markup=False)
+    mode = resolve_mode(str(args.progress or "auto"), as_json=False, console=probe)
+    display = build_progress(mode, request.source)
+    state = ProgressState(request.source)
+    sinks: list[RenderEvents] = [state]
+    if display is not None:
+        sinks.append(display)
+    events: RenderEvents = _Fanout(sinks)
+
+    def _force_quit() -> None:
+        if display is not None:
+            display.force_stop()
+        print(
+            "\u25a0 Stopped immediately; in-flight chunks were not cached.",
+            file=sys.stderr,
+        )
+
+    try:
+        with interrupt_guard(_force_quit):
+            if isinstance(display, LiveProgress):
+                with display:
+                    outcome = render(request, events=events)
+            else:
+                outcome = render(request, events=events)
+    except KeyboardInterrupt:
+        elapsed = time.monotonic() - started
+        for line in _failure_lines(
+            "",
+            "",
+            state,
+            started + elapsed,
+            request.source,
+            int(ExitCode.INTERRUPTED),
+            kind="interrupt",
+        ):
+            print(line, file=sys.stderr)
+        return int(ExitCode.INTERRUPTED)
+    except SaseListenError as exc:
+        elapsed = time.monotonic() - started
+        for line in _failure_lines(
+            str(exc),
+            exc.hint,
+            state,
+            started + elapsed,
+            request.source,
+            int(exc.code),
+            kind="fail",
+        ):
+            print(line, file=sys.stderr)
+        return int(exc.code)
+    except ValueError as exc:
+        elapsed = time.monotonic() - started
+        for line in _failure_lines(
+            str(exc),
+            "",
+            state,
+            started + elapsed,
+            request.source,
+            int(ExitCode.CONFIG),
+            kind="fail",
+        ):
+            print(line, file=sys.stderr)
+        return int(ExitCode.CONFIG)
+    except Exception as exc:
+        elapsed = time.monotonic() - started
+        for line in _failure_lines(
+            f"Unexpected failure: {exc}",
+            "Re-run; a killed render resumes from the cache.",
+            state,
+            started + elapsed,
+            request.source,
+            int(ExitCode.UNEXPECTED),
+            kind="fail",
+        ):
+            print(line, file=sys.stderr)
+        return int(ExitCode.UNEXPECTED)
+    elapsed = time.monotonic() - started
+    if isinstance(outcome, RenderPlan):
+        _print_plan(outcome)
+        return int(ExitCode.OK)
+    if mode != "live":
+        _print_final_frame(state, started + elapsed)
+    _print_result(
+        outcome, live=(mode == "live"), elapsed_s=elapsed, output=request.output
+    )
     return int(ExitCode.OK)

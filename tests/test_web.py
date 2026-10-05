@@ -277,7 +277,9 @@ def test_render_full_article_with_fake_writer(
 
     import sase_listen.writer
 
-    monkeypatch.setattr(sase_listen.writer, "create_writer", lambda cfg: FakeWriter())
+    monkeypatch.setattr(
+        sase_listen.writer, "create_writer", lambda cfg, **kwargs: FakeWriter()
+    )
     cfg = default_config()
     cfg.narrator = "tone"
     result = render(
@@ -347,7 +349,7 @@ def test_url_defaults_to_brief_and_dry_run_reuses_writer_script(
 
     import sase_listen.writer
 
-    def make_writer(cfg: object) -> FakeWriter:
+    def make_writer(cfg: object, **kwargs: object) -> FakeWriter:
         nonlocal calls
         calls += 1
         return FakeWriter()

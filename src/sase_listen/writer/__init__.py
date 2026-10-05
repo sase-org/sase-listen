@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from sase_listen.config import SaseListenConfig
 from sase_listen.engines import CredentialsError, resolve_api_key
+from sase_listen.engines.retry import RetryWait
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.writer.base import Writer, WriterReply
 from sase_listen.writer.gemini import GeminiWriter
 
 
-def create_writer(config: SaseListenConfig) -> Writer:
+def create_writer(
+    config: SaseListenConfig,
+    *,
+    on_retry: Callable[[RetryWait], None] | None = None,
+) -> Writer:
     """Build the configured article writer."""
     if config.writer.engine != "gemini":
         raise SaseListenError(
@@ -32,6 +39,7 @@ def create_writer(config: SaseListenConfig) -> Writer:
         temperature=config.writer.temperature,
         timeout_s=config.writer.timeout_s,
         max_retries=engine.max_retries,
+        on_retry=on_retry,
     )
 
 

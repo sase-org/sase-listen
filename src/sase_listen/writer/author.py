@@ -21,6 +21,7 @@ from sase_listen.engines.base import (
     TransientEngineError,
 )
 from sase_listen.errors import ExitCode, SaseListenError
+from sase_listen.events import RenderEvents
 from sase_listen.script import Finding, lint_text
 from sase_listen.web.store import AcquiredSource
 from sase_listen.writer.base import Writer
@@ -210,6 +211,7 @@ def author_script(
     writer: Writer,
     *,
     refresh: bool = False,
+    events: RenderEvents | None = None,
 ) -> AuthoredScript:
     """Write, lint, repair, and cache one article edition."""
     if edition not in {"brief", "full"}:
@@ -236,7 +238,21 @@ def author_script(
     required_findings: list[Finding] = []
     body = ""
     attempts = 0
-    for attempts in range(1, cfg.writer.max_attempts + 1):
+    model = cfg.writer.model
+    total_attempts = cfg.writer.max_attempts
+    for attempts in range(1, total_attempts + 1):
+        if events is not None:
+            if attempts == 1:
+                events.on_step(
+                    "write", f"attempt 1 of {total_attempts} · waiting on {model}"
+                )
+            else:
+                count = len(required_findings)
+                events.on_step(
+                    "write",
+                    f"attempt {attempts} of {total_attempts} · fixing {count} "
+                    f"lint finding(s) · waiting on {model}",
+                )
         try:
             reply = writer.write(system, current_user)
         except CredentialsError as exc:
@@ -250,6 +266,12 @@ def author_script(
         input_tokens += reply.input_tokens
         output_tokens += reply.output_tokens
         reply_model_version = reply.model_version or cfg.writer.model
+        if events is not None:
+            events.on_step(
+                "write",
+                f"attempt {attempts} of {total_attempts} · "
+                "checking the draft against the article",
+            )
         body = _strip_body(reply.text)
         script = _frontmatter(article, edition, body)
         source_text = article.markdown_path.read_text(encoding="utf-8")

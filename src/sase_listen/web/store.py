@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ class AcquiredSource:
     page_path: Path
     markdown_path: Path
     metadata: dict[str, Any]
+    reused: bool = False
 
     @property
     def verbatim_script_path(self) -> Path:
@@ -90,7 +92,9 @@ def _cached(root: Path, index: dict[str, str], key: str) -> AcquiredSource | Non
             return None
     except (OSError, json.JSONDecodeError):
         return None
-    return AcquiredSource(directory, page_path, markdown_path, dict(metadata))
+    return AcquiredSource(
+        directory, page_path, markdown_path, dict(metadata), reused=True
+    )
 
 
 def _source_name(title: str, canonical_url: str) -> str:
@@ -142,6 +146,7 @@ def acquire(
     *,
     html_file: str | Path | None = None,
     refresh: bool = False,
+    on_step: Callable[[str], None] | None = None,
 ) -> AcquiredSource:
     """Fetch/extract a URL once, retaining bytes, text and diagnostics locally."""
     requested_key = normalize_url(url)
@@ -153,7 +158,16 @@ def acquire(
         if cached is not None:
             return cached
 
+    if on_step is not None:
+        if html_file is not None:
+            name = Path(str(html_file)).name or "saved HTML"
+            on_step(f"reading saved HTML from {name}")
+        else:
+            host = requested_key.split("://", 1)[-1].split("/", 1)[0]
+            on_step(f"fetching {host}")
     page = load_html_file(url, html_file) if html_file is not None else fetch_page(url)
+    if on_step is not None:
+        on_step("extracting the article text")
     html_text = page.body.decode("utf-8", errors="replace")
     article = extract_article(html_text, page.final_url)
     canonical = normalize_url(article.canonical_url)
