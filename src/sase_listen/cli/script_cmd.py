@@ -25,9 +25,9 @@ def add_parser(
     p.add_argument(
         "-e",
         "--edition",
-        choices=("verbatim",),
+        choices=("brief", "full", "verbatim"),
         default=None,
-        help="URL edition to create (currently: verbatim).",
+        help="Article edition to create (URL default: brief).",
     )
     p.add_argument(
         "-H",
@@ -45,7 +45,7 @@ def add_parser(
         help="Fetch the URL again and replace the cached source.",
     )
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen script https://example.com/article --json"
+    p.epilog = "Example: sase-listen script https://example.com/article -e brief --json"
     return p
 
 
@@ -104,6 +104,8 @@ def run(args: argparse.Namespace) -> int:
                         "source_dir": str(
                             loaded.source_path.parent if loaded.source_path else ""
                         ),
+                        "script_path": str(loaded.source_path or ""),
+                        "writer": dict(loaded.writer),
                         "outline": {
                             "found": outline.get("found", 0),
                             "restored": outline.get("restored", []),
@@ -120,6 +122,18 @@ def run(args: argparse.Namespace) -> int:
             f"[green]✓[/green] Wrote {output_path} ({script.words()} words)."
         )
         return int(ExitCode.OK)
+
+    if args.edition in {"brief", "full"}:
+        print(
+            "sase-listen script: error: generated brief and full editions "
+            "are available for article URLs only.",
+            file=sys.stderr,
+        )
+        print(
+            "hint: Pass an http(s) article URL or use --edition verbatim.",
+            file=sys.stderr,
+        )
+        return int(ExitCode.USAGE)
 
     source_path = Path(args.source)
     if not source_path.exists():

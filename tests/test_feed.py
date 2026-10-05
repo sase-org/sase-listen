@@ -271,6 +271,38 @@ def test_publish_unpublish_roundtrip_and_golden_xml(
     assert not list(feed_dir.rglob(".tmp-*"))
 
 
+def test_article_feed_item_labels_coverage_byline_and_original_link(
+    isolated: Path, tmp_path: Path
+) -> None:
+    cfg, feed_dir, lib_dir = _feed_config(tmp_path)
+    episode = _write_library_episode(lib_dir, "article-full-aaaaaa")
+    manifest_path = episode / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["title"] = "Harness Engineering (Full)"
+    manifest["source"] = {
+        "url": "https://openai.com/index/harness-engineering/",
+        "title": "Harness Engineering",
+        "author": "Ada Lovelace",
+        "site": "OpenAI",
+        "date": "2026-02-11",
+    }
+    manifest["script"]["edition"] = "full"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    publish_episode("article-full-aaaaaa", cfg, library=lib_dir, root=feed_dir)
+    item = _parse(feed_dir / "feed.xml").find("channel/item")
+    assert item is not None
+    assert item.findtext("title") == "Harness Engineering (Full)"
+    description = item.findtext("description") or ""
+    assert "A full-length narrated adaptation of the whole article" in description
+    assert "By Ada Lovelace at OpenAI, published February 11, 2026" in description
+    assert (
+        '<a href="https://openai.com/index/harness-engineering/">'
+        "Read the original article</a>"
+    ) in description
+    assert "Findings" in description
+
+
 def test_guid_changes_on_rerender(isolated: Path, tmp_path: Path) -> None:
     cfg, feed_dir, lib_dir = _feed_config(tmp_path)
     _write_library_episode(lib_dir, "ep-re-111111")

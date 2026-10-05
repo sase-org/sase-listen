@@ -469,6 +469,8 @@ def test_render_plain_markdown(isolated: Path, tmp_path: Path, capsys) -> None:
         "narrator",
         "edition",
         "producer",
+        "script_path",
+        "writer",
         "words",
         "estimated_duration_s",
         "estimated_cost_usd",
@@ -502,6 +504,8 @@ def test_render_json_schema(isolated: Path, tmp_path: Path, capsys) -> None:
         "published",
         "publish_queued",
         "publish_host",
+        "script_path",
+        "writer",
         "warnings",
     }
     assert set(payload["chunks"]) == {"total", "cached", "synthesized", "retried"}

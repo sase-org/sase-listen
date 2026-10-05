@@ -22,6 +22,51 @@ def test_defaults_cover_shared_contracts() -> None:
     assert cfg.feed.max_episodes == 200
     assert "gemini" in cfg.narrators
     assert cfg.engines.gemini.concurrency == 3
+    assert cfg.writer.engine == "gemini"
+    assert cfg.writer.model == "gemini-3.1-pro-preview"
+    assert cfg.writer.temperature == 0.3
+    assert cfg.writer.max_attempts == 3
+    assert cfg.writer.timeout_s == 300
+
+
+def test_writer_config_env_override_and_masked_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SASE_LISTEN_WRITER_MODEL", raising=False)
+    p = tmp_path / "config.yml"
+    p.write_text(
+        yaml.safe_dump(
+            {
+                "writer": {
+                    "engine": "gemini",
+                    "model": "gemini-custom-pro",
+                    "temperature": 0.2,
+                    "max_attempts": 4,
+                    "timeout_s": 90,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg, origins = load_config(p)
+    assert cfg.writer.model == "gemini-custom-pro"
+    assert cfg.writer.temperature == 0.2
+    assert cfg.writer.max_attempts == 4
+    assert cfg.writer.timeout_s == 90
+    assert origins["writer"] == "file"
+    assert masked_snapshot(cfg)["writer"]["model"] == "gemini-custom-pro"
+
+    monkeypatch.setenv("SASE_LISTEN_WRITER_MODEL", "gemini-env-pro")
+    cfg, origins = load_config(p)
+    assert cfg.writer.model == "gemini-env-pro"
+    assert origins["writer"] == "env"
+
+
+def test_writer_config_rejects_unsupported_engine(tmp_path: Path) -> None:
+    p = tmp_path / "config.yml"
+    p.write_text(yaml.safe_dump({"writer": {"engine": "openai"}}), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"writer\.engine"):
+        load_config(p)
 
 
 def test_unknown_key_errors_with_suggestion(tmp_path: Path) -> None:

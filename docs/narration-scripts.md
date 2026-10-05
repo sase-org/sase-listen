@@ -37,6 +37,8 @@ synthesis boundary. Text before the first `##` is a structural error.
 Article scripts use `kind: article`, the canonical URL in `source`, and may
 include `author` and `site`. Those fields are read and written by the script
 parser and used in the spoken intro and generated cover. See [Web articles](web-articles.md).
+AI-written URL scripts use `producer: agent`; their manifest records the model,
+model version, prompt version, and lint-repair attempt count.
 
 The renderer adds the spoken intro (AI disclosure) and outro, so scripts
 must not. Agent scripts are named `<stem>_narration.md`, where `<stem>` is

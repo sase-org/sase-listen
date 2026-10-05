@@ -85,6 +85,10 @@ from sase_listen.script import (
     lint_text,
     parse_script_text,
 )
+from sase_listen.web.editions import (
+    article_coverage_sentence,
+    article_display_title,
+)
 from sase_listen.web.extract import normalize_url
 from sase_listen.web.store import AcquiredSource, acquire, save_verbatim_script
 
@@ -187,6 +191,8 @@ class RenderPlan:
     estimated_duration_s: float = 0.0
     estimated_cost_usd: float = 0.0
     cached_chunks: int = 0
+    script_path: str = ""
+    writer: dict[str, Any] = field(default_factory=dict)
 
     @property
     def synthesis_needed(self) -> int:
@@ -218,6 +224,8 @@ class RenderResult:
     published: bool = False
     publish_queued: bool = False
     publish_host: str = ""
+    script_path: str = ""
+    writer: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -256,6 +264,7 @@ class LoadedSource:
     source_path: Path | None  # set for filesystem inputs
     source_url: str = ""
     source_meta: dict[str, Any] = field(default_factory=dict)
+    writer: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -474,29 +483,65 @@ def load_source(
     edition: str | None = None,
     html_file: str = "",
     refresh: bool = False,
+    config: SaseListenConfig | None = None,
 ) -> LoadedSource:
     """Resolve a render source to an exact narration script plus provenance."""
     if looks_like_url(source):
-        if edition not in {None, "verbatim"}:
+        selected_edition = edition or "brief"
+        if selected_edition not in {"brief", "full", "verbatim"}:
             raise SaseListenError(
-                f"URL edition '{edition}' is not available yet.",
+                f"URL edition '{selected_edition}' is not available.",
                 ExitCode.USAGE,
-                hint="This phase supports only --edition verbatim for URLs.",
+                hint="Use --edition brief, --edition full, or --edition verbatim.",
             )
         acquired = acquire(source, html_file=html_file or None, refresh=refresh)
-        script_text, omissions = _article_script(acquired)
         metadata = acquired.metadata
         canonical = str(metadata.get("canonical_url", source))
+        writer_summary: dict[str, Any] = {}
+        if selected_edition in {"brief", "full"}:
+            from sase_listen.writer import create_writer
+            from sase_listen.writer.author import author_script, load_cached_script
+
+            cfg = config if config is not None else load_config()[0]
+            authored = (
+                None if refresh else load_cached_script(acquired, selected_edition, cfg)
+            )
+            if authored is None:
+                authored = author_script(
+                    acquired,
+                    selected_edition,
+                    cfg,
+                    create_writer(cfg),
+                    refresh=refresh,
+                )
+
+            script_text = authored.text
+            script_path: Path | None = authored.path
+            writer_summary = authored.writer
+            omissions: list[Omission] = []
+        else:
+            script_text, omissions = _article_script(acquired)
+            script_path = acquired.verbatim_script_path
         return LoadedSource(
             script_text=script_text,
             script=parse_script_text(script_text),
             omissions=omissions,
             source_label=canonical,
-            source_key=f"url:{canonical}#verbatim",
+            source_key=f"url:{canonical}#{selected_edition}",
             source_sha256=str(metadata.get("source_sha256", "")),
-            source_path=acquired.verbatim_script_path,
+            source_path=script_path,
             source_url=canonical,
             source_meta=dict(metadata),
+            writer=writer_summary,
+        )
+    if edition in {"brief", "full"}:
+        raise SaseListenError(
+            "Generated brief and full editions are available for article URLs.",
+            ExitCode.USAGE,
+            hint=(
+                "Pass an article URL, or render an existing narration script "
+                "without --edition."
+            ),
         )
     if looks_like_ref(source):
         text = read_artifact_ref(source)
@@ -541,6 +586,11 @@ def load_source(
             if sibling_source.is_file()
             else hashlib.sha256(path.read_bytes()).hexdigest()
         )
+        saved_writer_summary: dict[str, Any] = {}
+        if script.meta.producer == "agent":
+            from sase_listen.writer.author import load_writer_summary
+
+            saved_writer_summary = load_writer_summary(resolved, script.meta.edition)
         return LoadedSource(
             script_text=script_text,
             script=script,
@@ -551,6 +601,7 @@ def load_source(
             source_path=resolved,
             source_url=canonical,
             source_meta=metadata,
+            writer=saved_writer_summary,
         )
     return LoadedSource(
         script_text=script_text,
@@ -1392,6 +1443,10 @@ def plan_request(
         cache=prepared.cache,
         use_cache=not request.no_cache,
     )
+    if loaded.script.meta.kind == "article":
+        plan.title = article_display_title(plan.title, loaded.script.meta.edition)
+    plan.script_path = str(loaded.source_path or "")
+    plan.writer = dict(loaded.writer)
     plan.warnings = lint_warnings + residue_notes + plan.warnings
     outline = loaded.source_meta.get("outline", {})
     if (
@@ -1423,6 +1478,8 @@ def plan_to_json(plan: RenderPlan) -> dict[str, Any]:
         },
         "edition": plan.edition,
         "producer": plan.producer,
+        "script_path": plan.script_path,
+        "writer": dict(plan.writer),
         "words": plan.words,
         "estimated_duration_s": round(plan.estimated_duration_s, 2),
         "estimated_cost_usd": round(plan.estimated_cost_usd, 6),
@@ -1451,6 +1508,8 @@ def result_to_json(result: RenderResult) -> dict[str, Any]:
         "ok": True,
         "episode_id": result.episode_id,
         "title": result.title,
+        "script_path": result.script_path,
+        "writer": dict(result.writer),
         "audio_path": result.audio_path,
         "manifest_path": result.manifest_path,
         "duration_s": round(result.duration_s, 2),
@@ -1504,13 +1563,15 @@ def render(
     command's exit code on any failure.
     """
     listener = events if events is not None else RenderEvents()
+    effective_config = config if config is not None else load_config()[0]
     loaded = load_source(
         request.source,
         edition=request.edition,
         html_file=request.html,
         refresh=request.refresh,
+        config=effective_config,
     )
-    prepared = prepare(request, config=config, engine=engine, cache=cache)
+    prepared = prepare(request, config=effective_config, engine=engine, cache=cache)
     cfg = prepared.config
     plan = plan_request(request, prepared, loaded)
     listener.on_plan(plan)
@@ -1591,7 +1652,11 @@ def render(
                 title=plan.title,
                 author=meta.author or cfg.author,
                 date=meta.date,
-                description=f"AI-narrated audio edition of {plan.title}.",
+                description=(
+                    article_coverage_sentence(meta.edition)
+                    if meta.kind == "article"
+                    else f"AI-narrated audio edition of {plan.title}."
+                ),
                 episode_id=plan.episode_id,
                 source_ref=loaded.source_label,
                 kind=meta.kind,
@@ -1630,19 +1695,24 @@ def render(
                 "sha256": loaded.source_sha256,
                 "blob": meta.source_blob,
             }
+        script_payload: dict[str, Any] = {
+            "sha256": hashlib.sha256(loaded.script_text.encode("utf-8")).hexdigest(),
+            "producer": meta.producer,
+            "edition": meta.edition,
+            "words": plan.words,
+        }
+        if loaded.writer:
+            script_payload["writer"] = {
+                key: loaded.writer[key]
+                for key in ("model", "model_version", "prompt_version", "attempts")
+                if key in loaded.writer
+            }
         manifest_payload = build_manifest(
             episode_id=plan.episode_id,
             title=plan.title,
             version=__version__,
             source=source_payload,
-            script={
-                "sha256": hashlib.sha256(
-                    loaded.script_text.encode("utf-8")
-                ).hexdigest(),
-                "producer": meta.producer,
-                "edition": meta.edition,
-                "words": plan.words,
-            },
+            script=script_payload,
             narrator={
                 "name": prepared.narrator.name,
                 "engine": prepared.narrator.engine,
@@ -1780,6 +1850,8 @@ def render(
         published=published,
         publish_queued=publish_queued,
         publish_host=publish_host,
+        script_path=str(loaded.source_path or ""),
+        writer=dict(loaded.writer),
         warnings=warnings,
     )
     listener.on_done(result)

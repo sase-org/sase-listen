@@ -16,6 +16,7 @@ from sase_listen.engines.tone import ToneEngine
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.library import compute_episode_id
 from sase_listen.pipeline import (
+    RenderPlan,
     RenderRequest,
     RenderResult,
     build_intro_text,
@@ -27,6 +28,7 @@ from sase_listen.pipeline import (
 from sase_listen.script import ScriptMeta
 from sase_listen.web.extract import extract_article, normalize_url, repair_outline
 from sase_listen.web.fetch import FetchedPage, fetch_page
+from sase_listen.writer.base import WriterReply
 
 URL = "https://example.test/story?utm_source=newsletter#top"
 
@@ -168,7 +170,9 @@ def test_url_cli_script_json_and_stable_episode_id(
             url, url, 200, "text/html", _article_html(), "2026-10-04T00:00:00+00:00"
         ),
     )
-    assert main(["script", "https://example.test/story", "--json"]) == 0
+    assert (
+        main(["script", "https://example.test/story", "-e", "verbatim", "--json"]) == 0
+    )
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["outline"]["found"] == 5
@@ -180,7 +184,7 @@ def test_url_cli_script_json_and_stable_episode_id(
     assert payload["script"].startswith("---\n")
     assert payload["source_dir"]
 
-    url_loaded = load_source("https://example.test/story")
+    url_loaded = load_source("https://example.test/story", edition="verbatim")
     file_loaded = load_source(str(url_loaded.source_path))
     assert file_loaded.source_key == url_loaded.source_key
     assert file_loaded.source_label == url_loaded.source_label
@@ -192,9 +196,9 @@ def test_url_cli_script_json_and_stable_episode_id(
     assert not looks_like_ref("https://example.test")
     assert looks_like_ref("research:202610/report.md")
     with pytest.raises(SaseListenError) as edition_error:
-        load_source("https://example.test/story", edition="brief")
+        load_source("https://example.test/story", edition="digest")
     assert edition_error.value.code == ExitCode.USAGE
-    assert "only --edition verbatim" in edition_error.value.hint
+    assert "brief, --edition full" in edition_error.value.hint
 
 
 def test_tone_render_url_manifest_and_intro(
@@ -214,7 +218,7 @@ def test_tone_render_url_manifest_and_intro(
     cfg.narrator = "tone"
     cfg.feed.auto_publish = False
     outcome = render(
-        RenderRequest(source="https://example.test/story"),
+        RenderRequest(source="https://example.test/story", edition="verbatim"),
         config=cfg,
         engine=ToneEngine(),
         library_root=tmp_path / "library",
@@ -244,6 +248,130 @@ def test_tone_render_url_manifest_and_intro(
         "This is an AI-narrated reading of Harness engineering, by Ryan Lopopolo "
         "at OpenAI, published February 11, 2026."
     )
+
+
+def test_render_full_article_with_fake_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        store_module,
+        "fetch_page",
+        lambda url, **kwargs: FetchedPage(
+            url, url, 200, "text/html", _article_html(), "2026-10-04T00:00:00+00:00"
+        ),
+    )
+
+    class FakeWriter:
+        def write(self, system: str, user: str) -> WriterReply:
+            assert "Full" in system
+            return WriterReply(
+                "## First Section\n\nThe team chose a careful engineering process.\n\n"
+                "## The Results\n\nThe team describes what changed for readers.",
+                "stub-model-v1",
+                100,
+                200,
+            )
+
+    import sase_listen.writer
+
+    monkeypatch.setattr(sase_listen.writer, "create_writer", lambda cfg: FakeWriter())
+    cfg = default_config()
+    cfg.narrator = "tone"
+    result = render(
+        RenderRequest(
+            source="https://example.test/story",
+            edition="full",
+            dry_run=False,
+        ),
+        config=cfg,
+        engine=ToneEngine(),
+        library_root=tmp_path / "library",
+    )
+    assert isinstance(result, RenderResult)
+    assert result.title == "Article Test (Full)"
+    assert result.writer["model_version"] == "stub-model-v1"
+    manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["script"]["edition"] == "full"
+    assert manifest["script"]["writer"] == {
+        key: result.writer[key]
+        for key in ("model", "model_version", "prompt_version", "attempts")
+    }
+    assert manifest["title"] == "Article Test (Full)"
+    assert manifest["episode_id"] == compute_episode_id(
+        "Article Test", "url:https://example.test/story#full"
+    )
+    assert result.script_path.endswith("full_narration.md")
+    from mutagen.id3 import ID3
+
+    from sase_listen.web.editions import article_coverage_sentence
+
+    tags = ID3(result.audio_path)
+    assert tags.getall("COMM")[0].text == [article_coverage_sentence("full")]
+
+
+def test_url_defaults_to_brief_and_dry_run_reuses_writer_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(base / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(base / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(base / "state"))
+    monkeypatch.setenv("SASE_LISTEN_CONFIG", str(base / "missing-config.yml"))
+    monkeypatch.setattr(
+        store_module,
+        "fetch_page",
+        lambda url, **kwargs: FetchedPage(
+            url, url, 200, "text/html", _article_html(), "2026-10-04T00:00:00+00:00"
+        ),
+    )
+    calls = 0
+
+    class FakeWriter:
+        def write(self, system: str, user: str) -> WriterReply:
+            paragraph = (
+                "The team carefully describes the engineering process and results. "
+            )
+            return WriterReply(
+                "## The question\n\n"
+                + paragraph * 25
+                + "\n\n## The evidence\n\n"
+                + paragraph * 25,
+                "stub-brief-v1",
+                50,
+                75,
+            )
+
+    import sase_listen.writer
+
+    def make_writer(cfg: object) -> FakeWriter:
+        nonlocal calls
+        calls += 1
+        return FakeWriter()
+
+    monkeypatch.setattr(sase_listen.writer, "create_writer", make_writer)
+    url = "https://example.test/story"
+    assert main(["script", url, "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["script"].startswith("---\n")
+    assert "edition: brief" in payload["script"]
+    assert payload["writer"]["model_version"] == "stub-brief-v1"
+    assert calls == 1
+
+    cfg = default_config()
+    cfg.narrator = "tone"
+    outcome = render(
+        RenderRequest(source=url, dry_run=True), config=cfg, engine=ToneEngine()
+    )
+    assert isinstance(outcome, RenderPlan)
+    assert outcome.edition == "brief"
+    assert outcome.title == "Article Test (Brief)"
+    assert outcome.script_path.endswith("brief_narration.md")
+    assert outcome.writer["tokens"] == {"input": 50, "output": 75}
+    assert calls == 1
 
 
 @pytest.mark.live

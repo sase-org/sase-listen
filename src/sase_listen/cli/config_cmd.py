@@ -35,6 +35,12 @@ audio:
   intro_gap_s: 0.9
 cache:
   max_gb: 2.0
+writer:
+  engine: gemini
+  model: gemini-3.1-pro-preview
+  temperature: 0.3
+  max_attempts: 3
+  timeout_s: 300
 feed:
   # host: apollo                 # empty = this machine serves the feed
   # host_ssh: [apollo, apollo-do]

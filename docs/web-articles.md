@@ -6,7 +6,7 @@ reader receives the URL or page text.
 
 ```bash
 sase-listen script https://example.com/article --json
-sase-listen render https://example.com/article --edition verbatim --dry-run
+sase-listen render https://example.com/article --dry-run
 ```
 
 The first request stores the original HTML, repaired Markdown, extraction
@@ -32,3 +32,24 @@ sase-listen script https://example.com/article --html saved-page.html
 If a site blocks automated requests, the command explains how to retry with a
 saved HTML file. Pages shorter than 150 extracted words are rejected to catch
 login screens, abstracts, and error pages.
+
+## Brief and full editions
+
+URL renders default to an AI-written `brief` adaptation. Choose `full` to cover
+the article's major sections in order, or `verbatim` for the deterministic
+article-text reading. A full edition is an adaptation within a 2,400-word
+budget, not a word-for-word transcript. Brief targets about 600 words.
+
+Review a generated script before rendering it:
+
+```bash
+sase-listen script https://example.com/article -e full -o article_narration.md
+sase-listen render article_narration.md
+```
+
+The writer uses Gemini and the existing Gemini engine credentials. Generated
+scripts and writer metadata are cached beside the stored source; a matching
+source, model, edition, and prompt version reuses the script. Pass `--refresh`
+to fetch and write again. Script writing uses Gemini API tokens and incurs model
+usage charges. `render --dry-run` writes the script and reports the later audio
+synthesis estimate.

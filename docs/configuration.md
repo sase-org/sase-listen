@@ -51,6 +51,23 @@ appears in logs or `config` output. `source_url_templates` maps a
 [podcast-feed](podcast-feed.md) for serving and AntennaPod setup, and
 [Multi-machine publish](multi-machine.md) for `host` / `host_ssh`.
 
+## Article writer
+
+Article URL editions use the Gemini text API. The writer uses the existing
+`engines.gemini` credential settings and can be tuned with:
+
+```yaml
+writer:
+  engine: gemini
+  model: gemini-3.1-pro-preview
+  temperature: 0.3
+  max_attempts: 3 # initial write plus lint repairs
+  timeout_s: 300
+```
+
+`SASE_LISTEN_WRITER_MODEL` overrides `writer.model`. Cached scripts are reused
+when the source hash, prompt version, edition, and model match.
+
 ## Paths
 
 All locations follow XDG, overridable per variable:

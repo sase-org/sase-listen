@@ -93,6 +93,17 @@ class CacheConfig:
 
 
 @dataclass
+class WriterConfig:
+    """Article script writer configuration."""
+
+    engine: str = "gemini"
+    model: str = "gemini-3.1-pro-preview"
+    temperature: float = 0.3
+    max_attempts: int = 3
+    timeout_s: int = 300
+
+
+@dataclass
 class FeedConfig:
     """Private podcast feed configuration (feed phase extends behavior)."""
 
@@ -154,6 +165,7 @@ class SaseListenConfig:
     author: str = ""
     lexicon: str = ""
     cache: CacheConfig = field(default_factory=CacheConfig)
+    writer: WriterConfig = field(default_factory=WriterConfig)
     feed: FeedConfig = field(default_factory=FeedConfig)
 
 
@@ -167,6 +179,7 @@ _TOP_LEVEL_KEYS = [
     "author",
     "lexicon",
     "cache",
+    "writer",
     "feed",
 ]
 
@@ -360,6 +373,35 @@ def load_config(path: Path | None = None) -> tuple[SaseListenConfig, dict[str, s
         if "max_gb" in raw["cache"]:
             cfg.cache.max_gb = float(raw["cache"]["max_gb"])
         origins["cache"] = "file"
+    if "writer" in raw:
+        if not isinstance(raw["writer"], dict):
+            raise ValueError("Unknown config key 'writer': expected a mapping.")
+        _check_keys(
+            raw["writer"],
+            ["engine", "model", "temperature", "max_attempts", "timeout_s"],
+            "writer",
+        )
+        if "engine" in raw["writer"]:
+            cfg.writer.engine = str(raw["writer"]["engine"])
+        if cfg.writer.engine != "gemini":
+            raise ValueError("Unknown config value 'writer.engine': use 'gemini'.")
+        if "model" in raw["writer"]:
+            cfg.writer.model = str(raw["writer"]["model"]).strip()
+        if "temperature" in raw["writer"]:
+            cfg.writer.temperature = float(raw["writer"]["temperature"])
+        if "max_attempts" in raw["writer"]:
+            cfg.writer.max_attempts = int(raw["writer"]["max_attempts"])
+        if "timeout_s" in raw["writer"]:
+            cfg.writer.timeout_s = int(raw["writer"]["timeout_s"])
+        if not cfg.writer.model:
+            raise ValueError("Unknown config value 'writer.model': must not be empty.")
+        if not 0 <= cfg.writer.temperature <= 2:
+            raise ValueError("Unknown config value 'writer.temperature': use 0..2.")
+        if cfg.writer.max_attempts < 1:
+            raise ValueError("Unknown config value 'writer.max_attempts': use >= 1.")
+        if cfg.writer.timeout_s < 1:
+            raise ValueError("Unknown config value 'writer.timeout_s': use >= 1.")
+        origins["writer"] = "file"
     if "feed" in raw:
         if not isinstance(raw["feed"], dict):
             raise ValueError("Unknown config key 'feed': expected a mapping.")
@@ -402,6 +444,11 @@ def _apply_env_overrides(cfg: SaseListenConfig, origins: dict[str, str]) -> None
     if "SASE_LISTEN_OUTRO_TEMPLATE" in env:
         cfg.outro_template = env["SASE_LISTEN_OUTRO_TEMPLATE"]
         origins["outro_template"] = "env"
+    if "SASE_LISTEN_WRITER_MODEL" in env:
+        model = env["SASE_LISTEN_WRITER_MODEL"].strip()
+        if model:
+            cfg.writer.model = model
+            origins["writer"] = "env"
     if "SASE_LISTEN_CACHE_MAX_GB" in env:
         cfg.cache.max_gb = float(env["SASE_LISTEN_CACHE_MAX_GB"])
         origins["cache"] = "env"
@@ -472,6 +519,13 @@ def masked_snapshot(cfg: SaseListenConfig) -> dict[str, Any]:
         "author": cfg.author,
         "lexicon": cfg.lexicon,
         "cache": {"max_gb": cfg.cache.max_gb},
+        "writer": {
+            "engine": cfg.writer.engine,
+            "model": cfg.writer.model,
+            "temperature": cfg.writer.temperature,
+            "max_attempts": cfg.writer.max_attempts,
+            "timeout_s": cfg.writer.timeout_s,
+        },
         "feed": {
             "dir": cfg.feed.dir,
             "base_url": cfg.feed.base_url,

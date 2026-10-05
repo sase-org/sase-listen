@@ -38,9 +38,9 @@ def add_parser(
     p.add_argument(
         "-e",
         "--edition",
-        choices=("verbatim",),
+        choices=("brief", "full", "verbatim"),
         default=None,
-        help="URL edition to render (currently: verbatim).",
+        help="Article edition to render (URL default: brief).",
     )
     p.add_argument(
         "--force", action="store_true", help="Render despite structural lint errors."
@@ -68,7 +68,7 @@ def add_parser(
     )
     p.add_argument("--voice", default="", help="Override the narrator voice.")
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen render https://example.com/article -e verbatim"
+    p.epilog = "Example: sase-listen render https://example.com/article -e full"
     return p
 
 
@@ -100,6 +100,12 @@ def _print_plan(plan: RenderPlan) -> None:
     )
     print(f"Edition: {plan.edition}  Producer: {plan.producer}")
     print(f"Words: {plan.words}  About: {plan.estimated_duration_s / 60:.1f} min")
+    writer_usage = plan.writer.get("tokens", {})
+    if plan.writer and isinstance(writer_usage, dict):
+        print(
+            f"Writer usage: {writer_usage.get('input', 0)} input + "
+            f"{writer_usage.get('output', 0)} output tokens; billed separately."
+        )
     print(
         f"Chunks: {len(plan.chunks)} "
         f"({plan.cached_chunks} cached, {plan.synthesis_needed} to synthesize)"

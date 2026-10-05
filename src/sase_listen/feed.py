@@ -38,6 +38,10 @@ from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.library import episode_path, list_episode_ids, read_manifest
 from sase_listen.paths import config_path, feed_dir_default, library_dir, locks_dir
+from sase_listen.web.editions import (
+    article_coverage_sentence,
+    display_source_date,
+)
 
 #: Timeout for the external `token_command`, matching the engines contract.
 TOKEN_COMMAND_TIMEOUT_S = 15
@@ -315,6 +319,9 @@ def source_url_for(source: object, templates: dict[str, str]) -> str:
     """Link a manifest ``source`` (``{"ref": ...}``) to the written report."""
     if not isinstance(source, dict):
         return ""
+    url = source.get("url")
+    if isinstance(url, str) and url.strip():
+        return url
     ref = source.get("ref")
     if not isinstance(ref, str) or ":" not in ref:
         return ""
@@ -334,9 +341,19 @@ def _mmss(total_s: float) -> str:
 
 
 def _description_html(
-    title: str, chapters: list[dict[str, Any]], source_url: str
+    title: str,
+    chapters: list[dict[str, Any]],
+    source_url: str,
+    *,
+    coverage: str = "",
+    byline: str = "",
+    article: bool = False,
 ) -> str:
     parts = [f"<p>AI-narrated audio edition of {escape(title)}.</p>"]
+    if coverage:
+        parts.append(f"<p>{escape(coverage)}</p>")
+    if byline:
+        parts.append(f"<p>{escape(byline)}</p>")
     if chapters:
         items = "".join(
             f"<li>{_mmss(float(ch.get('start_ms', 0)) / 1000)} "
@@ -345,9 +362,10 @@ def _description_html(
         )
         parts.append(f"<h3>Chapters</h3><ul>{items}</ul>")
     if source_url:
-        parts.append(
-            f'<p><a href="{escape(source_url)}">Read the written report</a></p>'
+        link_text = (
+            "Read the original article" if article else "Read the written report"
         )
+        parts.append(f'<p><a href="{escape(source_url)}">{link_text}</a></p>')
     return "".join(parts)
 
 
@@ -410,11 +428,42 @@ def build_feed_xml(
         source_url = source_url_for(
             manifest.get("source"), cfg.feed.source_url_templates
         )
+        source_raw = manifest.get("source")
+        source_meta: dict[str, Any] = (
+            dict(source_raw) if isinstance(source_raw, dict) else {}
+        )
+        script_raw = manifest.get("script")
+        script_meta: dict[str, Any] = (
+            dict(script_raw) if isinstance(script_raw, dict) else {}
+        )
+        is_article = bool(source_meta.get("url"))
+        edition = str(script_meta.get("edition", ""))
+        coverage = article_coverage_sentence(edition) if is_article else ""
+        byline_parts: list[str] = []
+        author = str(source_meta.get("author") or "").strip()
+        site = str(source_meta.get("site") or "").strip()
+        if author and site:
+            byline_parts.append(f"By {author} at {site}")
+        elif author:
+            byline_parts.append(f"By {author}")
+        elif site:
+            byline_parts.append(f"From {site}")
+        source_date = display_source_date(str(source_meta.get("date") or ""))
+        if source_date:
+            byline_parts.append(f"published {source_date}")
+        byline = ", ".join(byline_parts)
         guid = ET.SubElement(item, "guid", {"isPermaLink": "false"})
         guid.text = f"{entry.episode_id}@{entry.mp3_sha256[:8]}"
         text(item, "pubDate", format_datetime(entry.created_at))
         desc = ET.SubElement(item, "description")
-        desc.text = _description_html(item_title, chapters, source_url)
+        desc.text = _description_html(
+            item_title,
+            chapters,
+            source_url,
+            coverage=coverage,
+            byline=byline,
+            article=is_article,
+        )
         ET.SubElement(
             item,
             "enclosure",

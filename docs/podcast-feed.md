@@ -69,7 +69,7 @@ system as episode covers.
 - Channel: `itunes:block` (`yes`), `podcast:locked` (`yes`),
   `itunes:explicit` (`false`) — the feed stays out of public indexes.
 - Items, newest first: title, an HTML description with the chapter list
-  and a link to the written report, a `guid` of
+  and a link to the source (research report or original article), a `guid` of
   `<episode-id>@<audio-sha256[:8]>` (re-renders show up as fresh audio),
   `pubDate`, an `enclosure` with the real byte length, `itunes:duration`,
   `itunes:image`, `itunes:episodeType full`, and a `podcast:chapters`
@@ -83,9 +83,9 @@ rebuild, and prune: episodes older than the retention window go first,
 then the oldest beyond the episode cap. Retention only ever removes
 feed copies — the library keeps every episode.
 
-With `feed.auto_publish: true`, `render` publishes `kind: research`
-episodes automatically. Anything else (plain Markdown, `kind:
-document`) still needs an explicit `publish` or `--publish`.
+With `feed.auto_publish: true`, `render` publishes `kind: research` and
+`kind: article` episodes automatically. Plain Markdown and `kind: document`
+still need an explicit `publish` or `--publish`.
 
 ## Serving with Tailscale Serve (and why `:8443`)
 
