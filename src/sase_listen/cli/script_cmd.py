@@ -22,6 +22,7 @@ from sase_listen.normalize import normalize_markdown
 from sase_listen.pipeline import (
     LoadedSource,
     load_source,
+    looks_like_pdf_file,
     looks_like_url,
     source_stages,
 )
@@ -37,7 +38,10 @@ def add_parser(
 ) -> argparse.ArgumentParser:
     """Register the script parser."""
     p = sub.add_parser("script", help="Create a deterministic narration script.")
-    p.add_argument("source", help="Markdown file or http(s) article URL to normalize.")
+    p.add_argument(
+        "source",
+        help="Markdown file, PDF file, or http(s) article URL to normalize.",
+    )
     p.add_argument(
         "-e",
         "--edition",
@@ -50,7 +54,7 @@ def add_parser(
         "--html",
         default="",
         metavar="FILE",
-        help="Use saved browser HTML instead of fetching the URL.",
+        help="Use a saved browser page (HTML or PDF) instead of fetching the URL.",
     )
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.add_argument("-o", "--output", default="", help="Write the script to PATH.")
@@ -134,7 +138,7 @@ def _load_url_source(args: argparse.Namespace) -> LoadedSource:
 
 def run(args: argparse.Namespace) -> int:
     """Normalize Markdown into an edition: verbatim narration script."""
-    if looks_like_url(args.source):
+    if looks_like_url(args.source) or looks_like_pdf_file(args.source):
         try:
             loaded = _load_url_source(args)
         except _Interrupted:
@@ -206,11 +210,11 @@ def run(args: argparse.Namespace) -> int:
     if args.edition in {"brief", "full"}:
         print(
             "sase-listen script: error: generated brief and full editions "
-            "are available for article URLs only.",
+            "are available for article URLs and PDF files only.",
             file=sys.stderr,
         )
         print(
-            "hint: Pass an http(s) article URL or use --edition verbatim.",
+            "hint: Pass an http(s) article URL or PDF file, or use --edition verbatim.",
             file=sys.stderr,
         )
         return int(ExitCode.USAGE)

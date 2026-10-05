@@ -56,12 +56,14 @@ sase-listen render SOURCE [-o OUT.mp3] [-n NARRATOR] [--voice VOICE]
 ```
 
 `SOURCE` is a narration script, a plain Markdown file (normalized
-automatically), or a `kind:path` artifact ref (fetched through audited
-`sase artifact read`), or an http(s) article URL. URL rendering defaults to the
-AI-written `brief` edition; choose `full` for an adaptation or `verbatim` for a
-deterministic article-text reading. `--html FILE` uses saved browser HTML, and
-`--refresh` fetches and writes it again. `--dry-run` writes the article script
-if needed, prints the chunk plan, and stops.
+automatically), a local PDF file, or a `kind:path` artifact ref (fetched
+through audited `sase artifact read`), or an http(s) article or PDF URL. URL
+and PDF rendering defaults to the AI-written `brief` edition; choose `full`
+for an adaptation or `verbatim` for a deterministic article-text reading.
+`--html FILE` uses a saved browser page (HTML or PDF), and `--refresh`
+fetches or extracts the source again and replaces the cached copy.
+`--dry-run` writes the article script if needed, prints the chunk plan, and
+stops.
 `--publish` / `--no-publish` override the `feed.auto_publish` config.
 `--cover IMG` uses explicitly chosen artwork; `-g` / `--generated-cover`
 generates the title card and ignores `cover` frontmatter and any sibling
@@ -78,9 +80,9 @@ sase-listen script SOURCE [-o notes_narration.md] [-e {brief,full,verbatim}]
 For Markdown files, produces an `edition: verbatim`, `producer: deterministic`
 script plus an omissions report. For article URLs, defaults to an AI-written
 brief script; `--edition full` writes a full adaptation, and `verbatim` selects
-deterministic normalization. `SOURCE` can be a Markdown file or an http(s)
-article URL. For URL behavior and cached source storage, see [Web articles](web-articles.md)
-and [Narration scripts](narration-scripts.md).
+deterministic normalization. `SOURCE` can be a Markdown file, a PDF file, or an http(s)
+article or PDF URL. For URL and PDF behavior and cached source storage,
+see [Web articles](web-articles.md) and [Narration scripts](narration-scripts.md).
 
 ## `lint` — validate a script
 

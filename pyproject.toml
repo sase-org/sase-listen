@@ -44,6 +44,7 @@ dependencies = [
     "trafilatura>=2.0",
     "curl_cffi>=0.10",
     "lxml>=5",
+    "pdfminer.six>=20250506",
 ]
 
 [project.urls]

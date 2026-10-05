@@ -43,7 +43,9 @@ def add_parser(
     p = sub.add_parser("render", help="Render a source into an MP3 episode.")
     p.add_argument(
         "source",
-        help="Narration script, Markdown file, kind:path ref, or http(s) URL",
+        help=(
+            "Narration script, Markdown file, PDF file, kind:path ref, or http(s) URL"
+        ),
     )
     cover_group = p.add_mutually_exclusive_group()
     cover_group.add_argument("--cover", default="", help="Cover image path.")
@@ -59,7 +61,7 @@ def add_parser(
         "--edition",
         choices=("brief", "full", "verbatim"),
         default=None,
-        help="Article edition to render (URL default: brief).",
+        help="Edition for URL and PDF sources (default: brief).",
     )
     p.add_argument(
         "--force", action="store_true", help="Render despite structural lint errors."
@@ -69,7 +71,7 @@ def add_parser(
         "--html",
         default="",
         metavar="FILE",
-        help="Use saved browser HTML instead of fetching the URL.",
+        help="Use a saved browser page (HTML or PDF) instead of fetching the URL.",
     )
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.add_argument("-n", "--narrator", default="", help="Narrator profile name.")
@@ -89,11 +91,14 @@ def add_parser(
         "-r",
         "--refresh",
         action="store_true",
-        help="Fetch the URL again and replace the cached source.",
+        help="Fetch or extract the source again and replace the cached copy.",
     )
     p.add_argument("--voice", default="", help="Override the narrator voice.")
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen render https://example.com/article -e full"
+    p.epilog = (
+        "Example: sase-listen render https://example.com/article -e full\n"
+        "Example: sase-listen render https://arxiv.org/pdf/2608.25174 -e full"
+    )
     return p
 
 

@@ -27,7 +27,7 @@ from sase_listen.pipeline import (
 )
 from sase_listen.script import ScriptMeta
 from sase_listen.web.extract import extract_article, normalize_url, repair_outline
-from sase_listen.web.fetch import FetchedPage, fetch_page
+from sase_listen.web.fetch import FetchedPage, fetch_page, load_html_file
 from sase_listen.writer.base import WriterReply
 
 URL = "https://example.test/story?utm_source=newsletter#top"
@@ -117,12 +117,38 @@ def test_fetch_detects_challenge_and_pdf(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "--html FILE" in challenge_error.value.hint
     assert challenge.closed
 
-    pdf = _Response(200, "application/pdf", b"%PDF")
+    pdf = _Response(200, "application/pdf", b"%PDF-1.4 body")
     monkeypatch.setattr(curl_cffi.requests, "get", lambda *a, **k: pdf)
-    with pytest.raises(SaseListenError) as pdf_error:
+    page = fetch_page("https://example.test")
+    assert page.content_type == "application/pdf"
+    assert page.body == b"%PDF-1.4 body"
+    assert pdf.closed
+
+    octet = _Response(200, "application/octet-stream", b"%PDF-1.4 body")
+    monkeypatch.setattr(curl_cffi.requests, "get", lambda *a, **k: octet)
+    assert fetch_page("https://example.test").content_type == "application/pdf"
+
+    declared = _Response(200, "application/pdf", b"<html>not a pdf</html>")
+    monkeypatch.setattr(curl_cffi.requests, "get", lambda *a, **k: declared)
+    with pytest.raises(SaseListenError) as mismatch_error:
         fetch_page("https://example.test")
-    assert pdf_error.value.code == ExitCode.USAGE
-    assert "PDF sources are not supported" in str(pdf_error.value)
+    assert mismatch_error.value.code == ExitCode.UNEXPECTED
+    assert "not a PDF" in str(mismatch_error.value)
+
+    other = _Response(200, "application/json", b"{}")
+    monkeypatch.setattr(curl_cffi.requests, "get", lambda *a, **k: other)
+    with pytest.raises(SaseListenError) as other_error:
+        fetch_page("https://example.test")
+    assert other_error.value.code == ExitCode.USAGE
+    assert "Only HTML pages and PDF documents" in other_error.value.hint
+
+
+def test_load_html_file_accepts_pdf(tmp_path: Path) -> None:
+    saved = tmp_path / "saved.pdf"
+    saved.write_bytes(b"%PDF-1.4 body")
+    page = load_html_file("https://example.test/paper", saved)
+    assert page.content_type == "application/pdf"
+    assert page.final_url == "https://example.test/paper"
 
 
 def test_store_reuse_refresh_and_html_file(

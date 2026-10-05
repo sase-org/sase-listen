@@ -76,12 +76,15 @@ load source → lint (6 unless --force) → plan chunks → synthesize → gates
 
 ## Web articles (`src/sase_listen/web/`)
 
-`fetch.py` downloads public HTML locally with Chrome impersonation and rejects
-unsupported media, oversized pages, and detected bot challenges. `extract.py`
-uses Trafilatura for article text and metadata, then repairs omitted H2/H3
-headings by matching their following prose. `store.py` atomically retains the
-HTML, repaired Markdown, metadata, URL index, and cached verbatim script under
-the XDG data directory. The pipeline gives URL sources a canonical URL and
+`fetch.py` downloads public HTML or PDF documents locally with Chrome
+impersonation and rejects unsupported media, oversized pages, and detected bot
+challenges. `extract.py` uses Trafilatura for article text and metadata, then
+repairs omitted H2/H3 headings by matching their following prose. `pdf.py`
+extracts PDF documents to the same article shape using pdfminer.six (bookmark
+or font-size headings, header/footer and small-text filtering, arXiv
+metadata). `store.py` atomically retains the original (HTML or PDF), repaired
+Markdown, metadata, source index, and cached verbatim script under the XDG data
+directory. The pipeline gives URL sources a canonical URL and
 edition identity, so rendering the stored script keeps the same episode id.
 
 ## Podcast feed (`src/sase_listen/feed.py`, `feedhost.py`)

@@ -1,4 +1,4 @@
-"""Atomic per-URL article source storage and cache reuse."""
+"""Atomic per-source article storage and cache reuse."""
 
 from __future__ import annotations
 
@@ -8,13 +8,21 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.paths import sources_dir
 from sase_listen.web.extract import Article, extract_article, normalize_url
-from sase_listen.web.fetch import FetchedPage, fetch_page, load_html_file
+from sase_listen.web.fetch import (
+    MAX_PDF_BYTES,
+    FetchedPage,
+    fetch_page,
+    is_pdf_bytes,
+    load_html_file,
+)
+from sase_listen.web.pdf import PdfExtraction, extract_pdf
 
 
 @dataclass(frozen=True)
@@ -26,6 +34,12 @@ class AcquiredSource:
     markdown_path: Path
     metadata: dict[str, Any]
     reused: bool = False
+
+    @property
+    def source_format(self) -> str:
+        """Return "pdf" for PDF sources, defaulting to "html"."""
+        value = self.metadata.get("format", "html")
+        return str(value) if value in {"pdf", "html"} else "html"
 
     @property
     def verbatim_script_path(self) -> Path:
@@ -81,14 +95,15 @@ def _cached(root: Path, index: dict[str, str], key: str) -> AcquiredSource | Non
     directory = root / name
     metadata_path = directory / "source.json"
     markdown_path = directory / "source.md"
-    page_path = directory / "page.html"
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if (
-            not isinstance(metadata, dict)
-            or not markdown_path.is_file()
-            or not page_path.is_file()
-        ):
+        if not isinstance(metadata, dict) or not markdown_path.is_file():
+            return None
+        original_name = (
+            "source.pdf" if metadata.get("format", "html") == "pdf" else "page.html"
+        )
+        page_path = directory / original_name
+        if not page_path.is_file():
             return None
     except (OSError, json.JSONDecodeError):
         return None
@@ -97,10 +112,10 @@ def _cached(root: Path, index: dict[str, str], key: str) -> AcquiredSource | Non
     )
 
 
-def _source_name(title: str, canonical_url: str) -> str:
+def _source_name(title: str, key: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].strip("-")
     slug = slug or "article"
-    digest = hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:6]
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:6]
     return f"{slug}-{digest}"
 
 
@@ -109,15 +124,18 @@ def _source_markdown(article: Article) -> str:
     return f"# {article.title}\n\n{body}\n" if body else f"# {article.title}\n"
 
 
-def _metadata(
-    page: FetchedPage, article: Article, source_markdown: str, html_sha256: str
-) -> dict[str, Any]:
+def _extractor_version(name: str) -> str:
     from importlib.metadata import PackageNotFoundError, version
 
     try:
-        extractor_version = version("trafilatura")
+        return version(name)
     except PackageNotFoundError:  # pragma: no cover - dependency is locked
-        extractor_version = "unknown"
+        return "unknown"
+
+
+def _metadata(
+    page: FetchedPage, article: Article, source_markdown: str, body_sha256: str
+) -> dict[str, Any]:
     return {
         "url": page.requested_url,
         "canonical_url": article.canonical_url,
@@ -129,12 +147,54 @@ def _metadata(
         "description": article.description,
         "fetched_at": page.fetched_at,
         "http_status": page.status,
-        "html_sha256": html_sha256,
+        "html_sha256": body_sha256,
         "source_sha256": hashlib.sha256(source_markdown.encode("utf-8")).hexdigest(),
         "words": article.words,
-        "extractor": {"name": "trafilatura", "version": extractor_version},
+        "format": "html",
+        "extractor": {
+            "name": "trafilatura",
+            "version": _extractor_version("trafilatura"),
+        },
         "outline": {
             "found": len(article.outline),
+            "restored": list(article.restored_headings),
+            "missing": list(article.missing_headings),
+        },
+    }
+
+
+def _pdf_metadata(
+    page: FetchedPage,
+    extraction: PdfExtraction,
+    source_markdown: str,
+    pdf_sha256: str,
+) -> dict[str, Any]:
+    article = extraction.article
+    return {
+        "url": page.requested_url,
+        "canonical_url": article.canonical_url,
+        "final_url": page.final_url,
+        "title": article.title,
+        "author": article.author,
+        "site": article.site,
+        "date": article.date,
+        "description": article.description,
+        "fetched_at": page.fetched_at,
+        "http_status": page.status,
+        "pdf_sha256": pdf_sha256,
+        "source_sha256": hashlib.sha256(source_markdown.encode("utf-8")).hexdigest(),
+        "words": article.words,
+        "format": "pdf",
+        "pages": extraction.pages,
+        "authors": list(extraction.authors),
+        "dropped_small_words": extraction.dropped_small_words,
+        "extractor": {
+            "name": "pdfminer.six",
+            "version": _extractor_version("pdfminer-six"),
+        },
+        "outline": {
+            "found": len(article.outline),
+            "source": extraction.outline_source,
             "restored": list(article.restored_headings),
             "missing": list(article.missing_headings),
         },
@@ -160,14 +220,36 @@ def acquire(
 
     if on_step is not None:
         if html_file is not None:
-            name = Path(str(html_file)).name or "saved HTML"
-            on_step(f"reading saved HTML from {name}")
+            name = Path(str(html_file)).name or "saved page"
+            on_step(f"reading saved page from {name}")
         else:
             host = requested_key.split("://", 1)[-1].split("/", 1)[0]
             on_step(f"fetching {host}")
     page = load_html_file(url, html_file) if html_file is not None else fetch_page(url)
     if on_step is not None:
         on_step("extracting the article text")
+    if page.content_type == "application/pdf":
+        extraction = extract_pdf(page.body, source_url=page.final_url)
+        article = extraction.article
+        canonical = normalize_url(article.canonical_url)
+        source_markdown = _source_markdown(article)
+        pdf_sha256 = hashlib.sha256(page.body).hexdigest()
+        metadata = _pdf_metadata(page, extraction, source_markdown, pdf_sha256)
+        name = _source_name(article.title, canonical)
+        directory = root / name
+        directory.mkdir(parents=True, exist_ok=True)
+        _atomic_write(directory / "source.pdf", page.body)
+        _atomic_write(directory / "source.md", source_markdown.encode("utf-8"))
+        _atomic_json(directory / "source.json", metadata)
+        index[requested_key] = name
+        index[canonical] = name
+        _atomic_json(root / "index.json", index)
+        return AcquiredSource(
+            directory,
+            directory / "source.pdf",
+            directory / "source.md",
+            metadata,
+        )
     html_text = page.body.decode("utf-8", errors="replace")
     article = extract_article(html_text, page.final_url)
     canonical = normalize_url(article.canonical_url)
@@ -186,6 +268,100 @@ def acquire(
     return AcquiredSource(
         directory,
         directory / "page.html",
+        directory / "source.md",
+        metadata,
+    )
+
+
+def acquire_file(path: str | Path, *, refresh: bool = False) -> AcquiredSource:
+    """Extract a local PDF file once, caching the result by content hash."""
+    source = Path(path).expanduser()
+    try:
+        size = source.stat().st_size
+    except FileNotFoundError as exc:
+        raise SaseListenError(
+            f"PDF source not found: {source}.",
+            ExitCode.USAGE,
+            hint="Pass an existing .pdf file, article URL, script, or Markdown file.",
+        ) from exc
+    except OSError as exc:
+        raise SaseListenError(
+            f"Could not read PDF source {source}: {exc}.",
+            ExitCode.USAGE,
+            hint="Check the file permissions and try again.",
+        ) from exc
+    if size > MAX_PDF_BYTES:
+        raise SaseListenError(
+            f"PDF source is too large ({size} bytes; limit is {MAX_PDF_BYTES}).",
+            ExitCode.USAGE,
+        )
+    try:
+        data = source.read_bytes()
+    except OSError as exc:
+        raise SaseListenError(
+            f"Could not read PDF source {source}: {exc}.",
+            ExitCode.USAGE,
+        ) from exc
+    if not is_pdf_bytes(data):
+        raise SaseListenError(
+            f"Not a PDF file: {source}.",
+            ExitCode.USAGE,
+            hint="Pass a .pdf file with a PDF document inside.",
+        )
+    pdf_sha256 = hashlib.sha256(data).hexdigest()
+    key = f"pdf:sha256:{pdf_sha256}"
+    root = sources_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    index = _read_index(root)
+    if not refresh:
+        cached = _cached(root, index, key)
+        if cached is not None:
+            return cached
+    extraction = extract_pdf(data, filename=source.name)
+    article = extraction.article
+    source_markdown = _source_markdown(article)
+    resolved = source.resolve()
+    metadata: dict[str, Any] = {
+        "url": "",
+        "canonical_url": "",
+        "final_url": "",
+        "file": str(resolved),
+        "title": article.title,
+        "author": article.author,
+        "site": article.site,
+        "date": article.date,
+        "description": article.description,
+        "fetched_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "http_status": 200,
+        "pdf_sha256": pdf_sha256,
+        "source_sha256": hashlib.sha256(source_markdown.encode("utf-8")).hexdigest(),
+        "words": article.words,
+        "format": "pdf",
+        "pages": extraction.pages,
+        "authors": list(extraction.authors),
+        "dropped_small_words": extraction.dropped_small_words,
+        "extractor": {
+            "name": "pdfminer.six",
+            "version": _extractor_version("pdfminer-six"),
+        },
+        "outline": {
+            "found": len(article.outline),
+            "source": extraction.outline_source,
+            "restored": list(article.restored_headings),
+            "missing": list(article.missing_headings),
+        },
+    }
+    name = _source_name(article.title, key)
+    directory = root / name
+    directory.mkdir(parents=True, exist_ok=True)
+    _atomic_write(directory / "source.pdf", data)
+    _atomic_write(directory / "source.md", source_markdown.encode("utf-8"))
+    _atomic_json(directory / "source.json", metadata)
+    index[key] = name
+    _atomic_json(root / "index.json", index)
+    return AcquiredSource(
+        directory,
+        directory / "source.pdf",
         directory / "source.md",
         metadata,
     )

@@ -1,4 +1,4 @@
-"""Browser-like, local HTTP fetches for public article pages."""
+"""Browser-like, local HTTP fetches for public article pages and PDFs."""
 
 from __future__ import annotations
 
@@ -11,6 +11,10 @@ from urllib.parse import urlsplit
 from sase_listen.errors import ExitCode, SaseListenError
 
 MAX_PAGE_BYTES = 20 * 1024 * 1024
+MAX_PDF_BYTES = 64 * 1024 * 1024
+PDF_CONTENT_TYPE = "application/pdf"
+_PDF_TYPES = {"application/pdf", "application/x-pdf"}
+_OCTET_TYPES = {"application/octet-stream", "binary/octet-stream"}
 _HTML_TYPES = {"text/html", "application/xhtml+xml"}
 _CHALLENGE_MARKERS = (
     "cf-chl-",
@@ -24,7 +28,7 @@ _CHALLENGE_MARKERS = (
 
 @dataclass(frozen=True)
 class FetchedPage:
-    """An HTTP response accepted as an HTML page."""
+    """An HTTP response accepted as an HTML page or PDF document."""
 
     requested_url: str
     final_url: str
@@ -32,6 +36,11 @@ class FetchedPage:
     content_type: str
     body: bytes
     fetched_at: str
+
+
+def is_pdf_bytes(data: bytes) -> bool:
+    """Return True when the bytes look like a PDF document."""
+    return b"%PDF-" in bytes(data[:1024])
 
 
 def _validate_http_url(url: str) -> None:
@@ -84,8 +93,9 @@ def fetch_page(
     *,
     timeout_s: float = 30,
     max_bytes: int = MAX_PAGE_BYTES,
+    max_pdf_bytes: int = MAX_PDF_BYTES,
 ) -> FetchedPage:
-    """Fetch an HTML page locally, impersonating a current Chrome browser."""
+    """Fetch an HTML page or PDF document, impersonating current Chrome."""
     _validate_http_url(url)
     try:
         from curl_cffi import requests
@@ -111,13 +121,18 @@ def fetch_page(
             .strip()
             .lower()
         )
+        pdf_capable = (
+            content_type in _PDF_TYPES
+            or content_type in _OCTET_TYPES
+            or not content_type
+        )
+        limit = max_pdf_bytes if pdf_capable else max_bytes
         content_length = response.headers.get("content-length")
         if content_length:
             try:
-                if int(content_length) > max_bytes:
+                if int(content_length) > limit:
                     raise _error(
-                        f"Page is too large ({content_length} bytes; "
-                        f"limit is {max_bytes})."
+                        f"Page is too large ({content_length} bytes; limit is {limit})."
                     )
             except ValueError:
                 pass
@@ -128,9 +143,9 @@ def fetch_page(
             if not chunk:
                 continue
             total += len(chunk)
-            if total > max_bytes:
+            if total > limit:
                 raise _error(
-                    f"Page is too large (over {max_bytes} bytes).",
+                    f"Page is too large (over {limit} bytes).",
                     hint="Save a smaller HTML page and re-run with `--html FILE`.",
                 )
             chunks.append(bytes(chunk))
@@ -145,17 +160,28 @@ def fetch_page(
             )
         if status < 200 or status >= 300:
             raise _error(f"The site returned HTTP {status} for {url}.")
-        if content_type == "application/pdf":
-            raise SaseListenError(
-                "PDF sources are not supported yet.",
-                ExitCode.USAGE,
-                hint="Convert the PDF to Markdown and render the file.",
-            )
-        if content_type not in _HTML_TYPES:
+        body_is_pdf = is_pdf_bytes(body)
+        if content_type in _PDF_TYPES:
+            if not body_is_pdf:
+                raise _error(
+                    f"Expected a PDF document for {url} "
+                    f"(content-type {content_type}), but the body is not a PDF.",
+                )
+            content_type = PDF_CONTENT_TYPE
+        elif content_type in _OCTET_TYPES or not content_type:
+            if body_is_pdf:
+                content_type = PDF_CONTENT_TYPE
+            elif content_type not in _HTML_TYPES:
+                raise SaseListenError(
+                    f"Unsupported page content type: {content_type or '(missing)'}.",
+                    ExitCode.USAGE,
+                    hint="Only HTML pages and PDF documents are supported.",
+                )
+        elif content_type not in _HTML_TYPES:
             raise SaseListenError(
                 f"Unsupported page content type: {content_type or '(missing)'}.",
                 ExitCode.USAGE,
-                hint="Only text/html and application/xhtml+xml pages are supported.",
+                hint="Only HTML pages and PDF documents are supported.",
             )
         final_url = str(response.url)
         _validate_http_url(final_url)
@@ -174,9 +200,50 @@ def fetch_page(
 def load_html_file(
     url: str, path: str | Path, *, max_bytes: int = MAX_PAGE_BYTES
 ) -> FetchedPage:
-    """Wrap saved browser HTML in the fetched-page shape without network access."""
+    """Wrap a saved browser page (HTML or PDF) in the fetched-page shape."""
     _validate_http_url(url)
-    body = _read_local_html(path, max_bytes=max_bytes)
+    source = Path(path).expanduser()
+    try:
+        size = source.stat().st_size
+    except FileNotFoundError as exc:
+        raise SaseListenError(
+            f"HTML source not found: {source}.", ExitCode.USAGE
+        ) from exc
+    except OSError as exc:
+        raise SaseListenError(
+            f"Could not read HTML source {source}: {exc}.", ExitCode.USAGE
+        ) from exc
+    # Read enough to sniff PDFs; the size cap depends on the sniff result.
+    try:
+        with source.open("rb") as handle:
+            head = handle.read(1024)
+    except OSError as exc:
+        raise SaseListenError(
+            f"Could not read HTML source {source}: {exc}.", ExitCode.USAGE
+        ) from exc
+    sniff_pdf = is_pdf_bytes(head)
+    limit = MAX_PDF_BYTES if sniff_pdf else max_bytes
+    if size > limit:
+        kind = "PDF" if sniff_pdf else "HTML"
+        raise SaseListenError(
+            f"{kind} source is too large ({size} bytes; limit is {limit}).",
+            ExitCode.USAGE,
+        )
+    try:
+        body = source.read_bytes()
+    except OSError as exc:
+        raise SaseListenError(
+            f"Could not read HTML source {source}: {exc}.", ExitCode.USAGE
+        ) from exc
+    if is_pdf_bytes(body):
+        return FetchedPage(
+            requested_url=url,
+            final_url=url,
+            status=200,
+            content_type=PDF_CONTENT_TYPE,
+            body=body,
+            fetched_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
     return FetchedPage(
         requested_url=url,
         final_url=url,

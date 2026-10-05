@@ -103,7 +103,12 @@ from sase_listen.web.editions import (
     article_display_title,
 )
 from sase_listen.web.extract import normalize_url
-from sase_listen.web.store import AcquiredSource, acquire, save_verbatim_script
+from sase_listen.web.store import (
+    AcquiredSource,
+    acquire,
+    acquire_file,
+    save_verbatim_script,
+)
 
 #: Words per minute assumed for estimates and gate selection.
 TARGET_WPM = 150.0
@@ -246,11 +251,14 @@ class RenderResult:
 def source_stages(source: str, edition: str | None) -> list[Stage]:
     """Return the expected source stages for a render source.
 
-    URL brief/full sources fetch the article then write the script; every
-    other source resolves in a single source stage.
+    URL and PDF brief/full sources fetch the article then write the script;
+    every other source resolves in a single source stage.
     """
     selected = edition or "brief"
-    if looks_like_url(source) and selected in {"brief", "full"}:
+    if (looks_like_url(source) or looks_like_pdf_file(source)) and selected in {
+        "brief",
+        "full",
+    }:
         return [Stage.SOURCE, Stage.WRITE]
     return [Stage.SOURCE]
 
@@ -478,6 +486,23 @@ def looks_like_url(source: str) -> bool:
     return bool(_URL_RE.match(source))
 
 
+def looks_like_pdf_file(source: str) -> bool:
+    """Return True for an existing local PDF file (by suffix or magic)."""
+    path = Path(source).expanduser()
+    try:
+        if not path.is_file():
+            return False
+    except OSError:
+        return False
+    if path.suffix.lower() == ".pdf":
+        return True
+    try:
+        with path.open("rb") as handle:
+            return b"%PDF-" in handle.read(1024)
+    except OSError:
+        return False
+
+
 def looks_like_script(text: str) -> bool:
     """Return True when Markdown carries a narration-script frontmatter marker."""
     match = _FRONTMATTER_RE.match(text)
@@ -583,6 +608,115 @@ def _read_article_metadata(path: Path, meta: ScriptMeta) -> dict[str, Any]:
     return source_meta
 
 
+def _load_acquired(
+    acquired: AcquiredSource,
+    *,
+    edition: str | None,
+    refresh: bool,
+    config: SaseListenConfig | None,
+    events: RenderEvents | None,
+    source_label: str,
+    source_key_base: str,
+    source_url: str,
+    source_meta: dict[str, Any] | None = None,
+) -> LoadedSource:
+    """Share the URL/PDF edition, writer-cache, and verbatim-script path."""
+    selected_edition = edition or "brief"
+    if selected_edition not in {"brief", "full", "verbatim"}:
+        raise SaseListenError(
+            f"URL edition '{selected_edition}' is not available.",
+            ExitCode.USAGE,
+            hint="Use --edition brief, --edition full, or --edition verbatim.",
+        )
+    metadata = dict(source_meta) if source_meta is not None else dict(acquired.metadata)
+    metadata["reused"] = acquired.reused
+    if events is not None:
+        title = str(metadata.get("title", "") or "")
+        if title:
+            events.on_title(title)
+    writer_summary: dict[str, Any] = {}
+    write_cached = False
+    write_attempts = 0
+    write_words = 0
+    write_chapters = 0
+    if selected_edition in {"brief", "full"}:
+        from sase_listen.writer import create_writer
+        from sase_listen.writer.author import author_script, load_cached_script
+
+        cfg = config if config is not None else load_config()[0]
+        if events is not None:
+            events.on_stage(Stage.WRITE.value)
+        authored = (
+            None if refresh else load_cached_script(acquired, selected_edition, cfg)
+        )
+        if authored is not None:
+            write_cached = True
+            script_text = authored.text
+            script_path = authored.path
+            writer_summary = authored.writer
+            parsed = parse_script_text(script_text)
+            write_words = parsed.words()
+            write_chapters = len(parsed.chapters)
+            write_attempts = int(authored.writer.get("attempts", 0) or 0)
+        else:
+            if events is not None:
+                events.on_step(Stage.WRITE.value, "reading the Gemini API key")
+            write_retry: Callable[[RetryWait], None] | None = None
+            if events is not None:
+                _wev = events
+
+                def _write_retry(wait: RetryWait) -> None:
+                    _wev.on_retry_wait(Stage.WRITE.value, None, wait)
+
+                write_retry = _write_retry
+            writer = create_writer(cfg, on_retry=write_retry)
+            authored = author_script(
+                acquired,
+                selected_edition,
+                cfg,
+                writer,
+                refresh=refresh,
+                events=events,
+            )
+            script_text = authored.text
+            script_path = authored.path
+            writer_summary = authored.writer
+            parsed = parse_script_text(script_text)
+            write_words = parsed.words()
+            write_chapters = len(parsed.chapters)
+            write_attempts = int(authored.writer.get("attempts", 0) or 0)
+        acquired_omissions: list[Omission] = []
+        omissions = acquired_omissions
+        if events is not None:
+            events.on_stage_done(
+                Stage.WRITE.value,
+                summarize_write(
+                    write_words,
+                    write_chapters,
+                    write_attempts,
+                    cached=write_cached,
+                ),
+            )
+    else:
+        script_text, omissions = _article_script(acquired)
+        script_path = acquired.verbatim_script_path
+    loaded = LoadedSource(
+        script_text=script_text,
+        script=parse_script_text(script_text),
+        omissions=omissions,
+        source_label=source_label,
+        source_key=f"{source_key_base}#{selected_edition}",
+        source_sha256=str(metadata.get("source_sha256", "")),
+        source_path=script_path,
+        source_url=source_url,
+        source_meta=dict(metadata),
+        writer=writer_summary,
+    )
+    if events is not None:
+        events.on_stage_done(Stage.SOURCE.value, summarize_source(loaded))
+    return loaded
+
+
 def load_source(
     source: str,
     *,
@@ -594,13 +728,6 @@ def load_source(
 ) -> LoadedSource:
     """Resolve a render source to an exact narration script plus provenance."""
     if looks_like_url(source):
-        selected_edition = edition or "brief"
-        if selected_edition not in {"brief", "full", "verbatim"}:
-            raise SaseListenError(
-                f"URL edition '{selected_edition}' is not available.",
-                ExitCode.USAGE,
-                hint="Use --edition brief, --edition full, or --edition verbatim.",
-            )
         if events is not None:
             events.on_stage(Stage.SOURCE.value)
         src_step: Callable[[str], None] | None = None
@@ -618,100 +745,46 @@ def load_source(
             on_step=src_step,
         )
         metadata = dict(acquired.metadata)
-        metadata["reused"] = acquired.reused
         canonical = str(metadata.get("canonical_url", source))
-        if events is not None:
-            title = str(metadata.get("title", "") or "")
-            if title:
-                events.on_title(title)
-        writer_summary: dict[str, Any] = {}
-        write_cached = False
-        write_attempts = 0
-        write_words = 0
-        write_chapters = 0
-        if selected_edition in {"brief", "full"}:
-            from sase_listen.writer import create_writer
-            from sase_listen.writer.author import author_script, load_cached_script
-
-            cfg = config if config is not None else load_config()[0]
-            if events is not None:
-                events.on_stage(Stage.WRITE.value)
-            authored = (
-                None if refresh else load_cached_script(acquired, selected_edition, cfg)
-            )
-            if authored is not None:
-                write_cached = True
-                script_text = authored.text
-                script_path = authored.path
-                writer_summary = authored.writer
-                parsed = parse_script_text(script_text)
-                write_words = parsed.words()
-                write_chapters = len(parsed.chapters)
-                write_attempts = int(authored.writer.get("attempts", 0) or 0)
-            else:
-                if events is not None:
-                    events.on_step(Stage.WRITE.value, "reading the Gemini API key")
-                write_retry: Callable[[RetryWait], None] | None = None
-                if events is not None:
-                    _wev = events
-
-                    def _write_retry(wait: RetryWait) -> None:
-                        _wev.on_retry_wait(Stage.WRITE.value, None, wait)
-
-                    write_retry = _write_retry
-                writer = create_writer(cfg, on_retry=write_retry)
-                authored = author_script(
-                    acquired,
-                    selected_edition,
-                    cfg,
-                    writer,
-                    refresh=refresh,
-                    events=events,
-                )
-                script_text = authored.text
-                script_path = authored.path
-                writer_summary = authored.writer
-                parsed = parse_script_text(script_text)
-                write_words = parsed.words()
-                write_chapters = len(parsed.chapters)
-                write_attempts = int(authored.writer.get("attempts", 0) or 0)
-            url_omissions: list[Omission] = []
-            omissions = url_omissions
-            if events is not None:
-                events.on_stage_done(
-                    Stage.WRITE.value,
-                    summarize_write(
-                        write_words,
-                        write_chapters,
-                        write_attempts,
-                        cached=write_cached,
-                    ),
-                )
-        else:
-            script_text, omissions = _article_script(acquired)
-            script_path = acquired.verbatim_script_path
-        loaded = LoadedSource(
-            script_text=script_text,
-            script=parse_script_text(script_text),
-            omissions=omissions,
+        return _load_acquired(
+            acquired,
+            edition=edition,
+            refresh=refresh,
+            config=config,
+            events=events,
             source_label=canonical,
-            source_key=f"url:{canonical}#{selected_edition}",
-            source_sha256=str(metadata.get("source_sha256", "")),
-            source_path=script_path,
+            source_key_base=f"url:{canonical}",
             source_url=canonical,
-            source_meta=dict(metadata),
-            writer=writer_summary,
         )
+    if looks_like_pdf_file(source):
         if events is not None:
-            events.on_stage_done(Stage.SOURCE.value, summarize_source(loaded))
-        return loaded
+            events.on_stage(Stage.SOURCE.value)
+            events.on_step(
+                Stage.SOURCE.value, f"extracting PDF from {Path(source).name}"
+            )
+        acquired_pdf = acquire_file(source, refresh=refresh)
+        pdf_metadata = dict(acquired_pdf.metadata)
+        pdf_sha = str(pdf_metadata.get("pdf_sha256", ""))
+        resolved_label = str(Path(source).expanduser().resolve())
+        return _load_acquired(
+            acquired_pdf,
+            edition=edition,
+            refresh=refresh,
+            config=config,
+            events=events,
+            source_label=resolved_label,
+            source_key_base=f"pdf:{pdf_sha}",
+            source_url="",
+            source_meta=pdf_metadata,
+        )
     if edition in {"brief", "full"}:
         raise SaseListenError(
-            "Generated brief and full editions are available for article URLs.",
+            "Generated brief and full editions are available for article URLs "
+            "and PDF files.",
             ExitCode.USAGE,
             hint=(
-                "Pass an article URL, or render an existing narration script "
-                "without --edition."
+                "Pass an article URL or PDF file, or render an existing "
+                "narration script without --edition."
             ),
         )
     if looks_like_ref(source):
@@ -746,7 +819,8 @@ def load_source(
             f"Source not found: {source}.",
             ExitCode.USAGE,
             hint=(
-                "Pass a narration script, Markdown file, kind:path ref, or http(s) URL."
+                "Pass a narration script, Markdown file, PDF file, kind:path ref, "
+                "or http(s) URL."
             ),
         )
     if events is not None:

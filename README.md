@@ -24,8 +24,10 @@ AntennaPod. Full docs: <https://sase-org.github.io/sase-listen/>.
 
 1. **Write a narration script** — by hand for research reports
    (`sase-listen guide` prints the authoring rules, brief by default,
-   `sase-listen lint` checks them), or deterministically from any Markdown
-   (`sase-listen script`).
+   `sase-listen lint` checks them), deterministically from any Markdown
+   (`sase-listen script`), or from an article or PDF URL or local PDF file
+   (`sase-listen script https://example.com/article`,
+   `sase-listen render paper.pdf -e full`).
 2. **Render it** — `sase-listen render` synthesizes each chapter, gates quality
    chunk by chunk, masters to a loudness-normalized MP3, and commits the episode
    to a local library with a manifest.

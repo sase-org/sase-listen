@@ -144,3 +144,9 @@ source or accept the document-send fallback.
 Run the failing command with `--json` for the single-object error report, and
 file an issue at <https://github.com/sase-org/sase-listen/issues> with the
 command, the JSON output, and `sase-listen doctor` results.
+
+## `The extracted PDF text is too short` (scanned PDFs)
+
+The PDF has no usable text layer — usually a scanned image. OCR is not
+supported: convert the PDF to Markdown (or export the paper as text) and
+render that file instead.

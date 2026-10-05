@@ -21,9 +21,10 @@ matched to the extracted Markdown. Some pages omit headings from extraction;
 the repair report makes that visible. Verbatim scripts normalize prose and
 report omitted content such as code, large tables, and math.
 
-Only public HTML pages (`text/html` and `application/xhtml+xml`) are supported.
-PDFs, login pages, and JavaScript-only pages are not extracted. For a page that
-requires browser access, save its HTML and use `--html FILE`:
+Only public HTML pages (`text/html` and `application/xhtml+xml`) and PDF
+documents are supported. Login pages and JavaScript-only pages are not
+extracted. For a page that requires browser access, save it and use
+`--html FILE`:
 
 ```bash
 sase-listen script https://example.com/article --html saved-page.html
@@ -53,3 +54,42 @@ source, model, edition, and prompt version reuses the script. Pass `--refresh`
 to fetch and write again. Script writing uses Gemini API tokens and incurs model
 usage charges. `render --dry-run` writes the script and reports the later audio
 synthesis estimate.
+
+## PDF documents
+
+PDF URLs work everywhere an article URL does (`render`, `script`, all three
+editions `brief` / `full` / `verbatim`, caching, `--refresh`, auto-publish).
+A URL is treated as a PDF when its content type is `application/pdf` (or
+`application/x-pdf`), or when an octet-stream or missing content type carries
+`%PDF` bytes:
+
+```bash
+sase-listen render https://arxiv.org/pdf/2608.25174 -e full
+```
+
+Local `.pdf` files are valid sources too, cached by content hash so re-renders
+of the same file reuse the extraction:
+
+```bash
+sase-listen render paper.pdf -e full
+sase-listen script paper.pdf -e verbatim --json
+```
+
+`render URL --html saved.pdf` keeps the URL identity for a PDF that had to be
+downloaded by hand.
+
+Extraction runs locally with pdfminer.six. Headings come from the PDF bookmark
+outline when present, else from font sizes (large text, or short bold lines
+with section numbering). Dropped along the way: running headers and footers,
+page numbers, footnotes and other small text, table cells, numeric citation
+brackets like `[12]`, the page-1 author/affiliation block, boilerplate
+(`CCS Concepts`, `Keywords`, copyright notices), and the references section.
+Kept metadata: the document title, a speakable author credit ("A and
+colleagues" for four or more authors), the arXiv date and `arXiv` site when the
+arXiv stamp is present, and the page count.
+
+Limits: 64 MiB, 400 pages, no OCR — scanned PDFs without a text layer are
+rejected with "The extracted PDF text is too short". Editions and caching match
+articles, and `script … --json` reports the stored `source_dir`, word count,
+and outline diagnostics (`found`, `restored`, `missing`, plus the outline
+`source`: `bookmarks`, `fonts`, or `none`).

@@ -227,7 +227,9 @@ def author_script(
         if cached is not None:
             return cached
 
-    system = system_prompt(edition)
+    system = system_prompt(
+        edition, source_format=str(article.metadata.get("format", "html"))
+    )
     base_user = user_prompt(article, edition)
     prompt_sha = hashlib.sha256(f"{system}\0{base_user}".encode()).hexdigest()
     current_user = base_user
