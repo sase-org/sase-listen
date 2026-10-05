@@ -31,13 +31,19 @@ it is online.
 
 ## Credentials
 
-This agent environment exports a stale 39-character `AIza…` `GEMINI_API_KEY`
-that overrides `engines.gemini.api_key_command: pass show gemini_cli_api_key`
-and makes Gemini return HTTP 400 `API_KEY_INVALID`. Always run:
+This agent environment exported a stale 39-character `AIza…` `GEMINI_API_KEY`
+that overrode `engines.gemini.api_key_command: pass show gemini_cli_api_key`
+and made Gemini return HTTP 400 `API_KEY_INVALID`. The manual workaround was:
 
 ```
 env -u GEMINI_API_KEY -u GOOGLE_API_KEY -u SASE_LISTEN_GEMINI_API_KEY sase-listen …
 ```
+
+That workaround is superseded by the pinned chezmoi config
+(`engines.gemini.api_key_env: [SASE_LISTEN_GEMINI_API_KEY]`), which makes the
+pass-managed key win regardless of ambient generic keys. The stale entries
+were removed from `~/.profile.local`, `~/.sase/service/env`, and the tmux
+global environment.
 
 `pass show gemini_cli_api_key` is the paid key that actually works.
 

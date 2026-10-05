@@ -20,7 +20,12 @@ from sase_listen.engines.gemini import GeminiEngine
 from sase_listen.engines.narrators import ResolvedNarrator, resolve_narrator
 from sase_listen.engines.openai import OpenAIEngine
 from sase_listen.engines.retry import synthesize_with_retry
-from sase_listen.engines.secrets import resolve_api_key
+from sase_listen.engines.secrets import (
+    describe_api_key_source,
+    hint_for_credentials_error,
+    resolve_api_key,
+    resolve_api_key_with_source,
+)
 from sase_listen.engines.tone import ToneEngine
 
 __all__ = [
@@ -37,7 +42,10 @@ __all__ = [
     "ToneEngine",
     "TransientEngineError",
     "create_engine",
+    "describe_api_key_source",
+    "hint_for_credentials_error",
     "resolve_api_key",
+    "resolve_api_key_with_source",
     "resolve_narrator",
     "synthesize_with_retry",
 ]

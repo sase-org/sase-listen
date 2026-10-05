@@ -11,6 +11,7 @@ from sase_listen.engines.base import (
     CredentialsError,
     PermanentEngineError,
     TransientEngineError,
+    is_invalid_api_key,
 )
 from sase_listen.engines.retry import synthesize_with_retry
 from sase_listen.writer.base import WriterReply
@@ -52,12 +53,8 @@ def _error_detail(exc: Any) -> str:
 
 
 def _is_invalid_api_key(code: Any, detail: str) -> bool:
-    if code in (401, 403):
-        return True
-    if code != 400:
-        return False
-    lowered = detail.lower()
-    return "api_key_invalid" in lowered or "api key not valid" in lowered
+    """Shared credentials check (see engines.base.is_invalid_api_key)."""
+    return is_invalid_api_key(code, detail)
 
 
 def _map_api_error(exc: Any) -> Exception:

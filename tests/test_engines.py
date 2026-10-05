@@ -22,6 +22,7 @@ from sase_listen.engines import (
     CredentialsError,
     PermanentEngineError,
     SynthesisRequest,
+    SynthesisResult,
     ToneEngine,
     TransientEngineError,
     create_engine,
@@ -577,6 +578,190 @@ def test_create_engine_factory() -> None:
 
 
 # --- Live verification (one real Gemini call; needs SASE_LISTEN_LIVE=1) ---
+
+
+class _CompatError(Exception):
+    """Fake google-genai interactions compat error (duck-typed)."""
+
+    def __init__(
+        self,
+        status_code: int | None,
+        message: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = SimpleNamespace(headers=headers or {})
+
+
+_CompatError.__module__ = "google.genai._gaos.lib.compat_errors"
+
+
+def _compat_engine(
+    record: dict, error: Exception | None, response: object | None = None
+) -> GeminiEngine:
+    def factory(api_key: str) -> object:
+        del api_key
+
+        class _Interactions:
+            def create(self, **kwargs: object) -> object:
+                record.update(kwargs)
+                if error is not None:
+                    raise error
+                assert response is not None
+                return response
+
+        return SimpleNamespace(interactions=_Interactions())
+
+    return GeminiEngine("test-key", client_factory=factory)
+
+
+def test_gemini_compat_error_taxonomy() -> None:
+    cases: list[tuple[int | None, str, type]] = [
+        (400, "API_KEY_INVALID: key not valid", CredentialsError),
+        (400, "API key not valid, sorry", CredentialsError),
+        (400, "something else broke", PermanentEngineError),
+        (401, "unauthorized", CredentialsError),
+        (403, "forbidden", CredentialsError),
+        (429, "rate limited", TransientEngineError),
+        (500, "server broke", TransientEngineError),
+        (503, "unavailable", TransientEngineError),
+        (None, "connection reset", TransientEngineError),
+    ]
+    for status, message, kind in cases:
+        record: dict = {}
+        engine = _compat_engine(
+            record, _CompatError(status, message), _gemini_interaction(_wav_bytes())
+        )
+        with pytest.raises(kind):
+            engine.synthesize(_request())
+
+
+def test_gemini_compat_429_is_retried() -> None:
+    record: dict = {}
+    attempts = {"n": 0}
+    error = _CompatError(429, "rate limited", {"retry-after": "0"})
+
+    def factory(api_key: str) -> object:
+        del api_key
+
+        class _Interactions:
+            def create(self, **kwargs: object) -> object:
+                record.update(kwargs)
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise error
+                return _gemini_interaction(_wav_bytes())
+
+        return SimpleNamespace(interactions=_Interactions())
+
+    engine = GeminiEngine("test-key", client_factory=factory)
+    result = synthesize_with_retry(
+        lambda: engine.synthesize(_request()),
+        max_retries=2,
+        sleep=lambda _: None,
+        rand=lambda lo, hi: 0.0,
+    )
+    assert attempts["n"] == 2
+    assert len(result.pcm) > 0
+
+
+def test_gemini_compat_400_invalid_key_message() -> None:
+    from sase_listen.engines.gemini import _map_api_error
+
+    mapped = _map_api_error(_CompatError(400, "reason API_KEY_INVALID here"))
+    assert isinstance(mapped, CredentialsError)
+    mapped_plain = _map_api_error(_CompatError(400, "plain bad request"))
+    assert isinstance(mapped_plain, PermanentEngineError)
+
+
+def test_resolve_with_source_prefers_env() -> None:
+    from sase_listen.engines import resolve_api_key_with_source
+
+    key, source = resolve_api_key_with_source(
+        engine="gemini",
+        env_names=["FIRST", "SECOND"],
+        api_key_command="",
+        env={"FIRST": "", "SECOND": "secret-value"},
+    )
+    assert key == "secret-value"
+    assert source == "env SECOND"
+
+
+def test_credential_failure_hint_names_env_var() -> None:
+    from sase_listen.config import default_config
+    from sase_listen.engines import CredentialsError as EngineCredentialsError
+    from sase_listen.engines import ToneEngine as BaseTone
+    from sase_listen.errors import ExitCode
+    from sase_listen.pipeline import synthesize_one
+
+    secret = "test-secret-value-xyz"
+    cfg = default_config()
+    cfg.engines.gemini.api_key_env = ["SASE_LISTEN_GEMINI_API_KEY", "GEMINI_API_KEY"]
+    cfg.engines.gemini.api_key_command = "pass show gemini_cli_api_key"
+
+    class _CredEngine(BaseTone):
+        def synthesize(self, request: SynthesisRequest) -> SynthesisResult:
+            raise EngineCredentialsError("rejected key")
+
+    import os as _os
+
+    old_gemini = _os.environ.get("GEMINI_API_KEY")
+    old_tool = _os.environ.get("SASE_LISTEN_GEMINI_API_KEY")
+    _os.environ.pop("SASE_LISTEN_GEMINI_API_KEY", None)
+    _os.environ["GEMINI_API_KEY"] = secret
+    try:
+        narrator = resolve_narrator("gemini", cfg)
+        with pytest.raises(Exception) as excinfo:
+            synthesize_one(_CredEngine(), narrator, "hi", max_retries=0, config=cfg)
+        err = excinfo.value
+        assert getattr(err, "code", None) == ExitCode.CONFIG
+        assert "GEMINI_API_KEY" in getattr(err, "hint", "")
+        assert secret not in str(err)
+        assert secret not in getattr(err, "hint", "")
+    finally:
+        if old_gemini is None:
+            _os.environ.pop("GEMINI_API_KEY", None)
+        else:
+            _os.environ["GEMINI_API_KEY"] = old_gemini
+        if old_tool is not None:
+            _os.environ["SASE_LISTEN_GEMINI_API_KEY"] = old_tool
+
+
+def test_doctor_reports_shadowing_source(
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json as _json
+    from pathlib import Path as _Path
+
+    base = _Path(str(tmp_path)) / "xdg"  # type: ignore[arg-type]
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(base / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(base / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(base / "state"))
+    cfg_path = base / "listen.yml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        "narrator: gemini\nengines:\n  gemini:\n"
+        "    api_key_env: [SASE_LISTEN_GEMINI_API_KEY, GEMINI_API_KEY]\n"
+        "    api_key_command: pass show gemini_cli_api_key\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SASE_LISTEN_CONFIG", str(cfg_path))
+    monkeypatch.setenv("GEMINI_API_KEY", "shadowing-secret")
+    monkeypatch.delenv("SASE_LISTEN_GEMINI_API_KEY", raising=False)
+    from sase_listen.cli.app import main as _main
+
+    assert _main(["doctor", "--json"]) in (0, 3)
+    out = capsys.readouterr().out
+    payload = _json.loads(out)
+    cred = next(item for item in payload["checks"] if item["name"] == "credentials")
+    assert cred["ok"] is True
+    assert "env GEMINI_API_KEY" in cred["detail"]
+    assert "overrides engines.gemini.api_key_command" in cred["detail"]
+    assert "shadowing-secret" not in cred["detail"]
 
 
 @pytest.mark.live

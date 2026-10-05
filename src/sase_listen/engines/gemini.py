@@ -29,6 +29,7 @@ from sase_listen.engines.base import (
     SynthesisRequest,
     SynthesisResult,
     TransientEngineError,
+    is_invalid_api_key,
 )
 
 #: Fallback voice when a profile names none (e.g. `gemini-lite`).
@@ -80,23 +81,66 @@ def _extract_pcm(interaction: Any) -> tuple[bytes, int]:
     return _decode_output(data)
 
 
-def _map_api_error(exc: Any) -> Exception:
+def _error_detail(exc: Any) -> str:
+    """Return a short, secret-free error body for classification and messages."""
+    text = str(exc).strip()
+    if not text:
+        message = getattr(exc, "message", None)
+        text = str(message).strip() if message else ""
+    text = " ".join(text.split())
+    if len(text) > 300:
+        text = text[:297] + "..."
+    return text
+
+
+def _status_code(exc: Any) -> int | None:
+    """Read `code` (errors.APIError) or `status_code` (interactions compat)."""
     code = getattr(exc, "code", None)
-    if code in (401, 403):
+    if isinstance(code, int):
+        return code
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    return None
+
+
+def _is_genai_compat_error(exc: Any) -> bool:
+    """Return True for google-genai interactions compat errors.
+
+    Duck-typed on an integer-or-None `status_code` from a `google.genai`
+    exception class, without importing the private `_gaos` module.
+    """
+    if not hasattr(exc, "status_code"):
+        return False
+    module = getattr(exc.__class__, "__module__", "")
+    return isinstance(module, str) and module.startswith("google.genai")
+
+
+def _map_api_error(exc: Any) -> Exception:
+    code = _status_code(exc)
+    detail = _error_detail(exc)
+    if code is None:
+        return TransientEngineError(f"Gemini connection failed: {detail or exc}.")
+    if is_invalid_api_key(code, detail):
         return CredentialsError(f"Gemini rejected the API key (HTTP {code}).")
     if code == 429:
         return TransientEngineError(
             f"Gemini rate-limited the request (HTTP {code}).",
             retry_after=_retry_after(exc),
         )
-    if isinstance(code, int) and code >= 500:
+    if code >= 500:
         return TransientEngineError(f"Gemini server error (HTTP {code}).")
-    return PermanentEngineError(f"Gemini request failed (HTTP {code}): {exc}.")
+    return PermanentEngineError(
+        f"Gemini request failed (HTTP {code}): {detail or exc}."
+    )
 
 
 def _retry_after(exc: Any) -> float | None:
     try:
-        headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+        response = getattr(exc, "response", None)
+        headers = (getattr(response, "headers", None) or {}) or (
+            getattr(exc, "headers", None) or {}
+        )
         value = headers.get("retry-after") or headers.get("Retry-After")
         return float(value) if value is not None else None
     except (TypeError, ValueError):
@@ -152,6 +196,10 @@ class GeminiEngine:
             raise TransientEngineError(f"Gemini transport error: {exc}.") from exc
         except (TimeoutError, ConnectionError) as exc:
             raise TransientEngineError(f"Gemini connection failed: {exc}.") from exc
+        except Exception as exc:
+            if _is_genai_compat_error(exc):
+                raise _map_api_error(exc) from exc
+            raise
         pcm, sample_rate = _extract_pcm(interaction)
         return SynthesisResult(
             pcm=pcm, sample_rate=sample_rate, usage={"engine": "gemini"}

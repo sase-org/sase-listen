@@ -10,6 +10,7 @@ from typing import Any
 
 from sase_listen import __version__
 from sase_listen.config import SaseListenConfig, load_config
+from sase_listen.engines.secrets import describe_api_key_source
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.feed import FEED_XML_NAME, feed_root, resolve_token
 from sase_listen.feedhost import feed_role, pending_publishes, run_remote
@@ -95,12 +96,29 @@ def _run_checks(*, online: bool) -> tuple[list[dict[str, Any]], bool]:
                 }
             )
             ok = False
+        elif profile.engine in ("gemini", "openai"):
+            try:
+                engine_cfg = getattr(cfg.engines, profile.engine)
+                source = describe_api_key_source(
+                    engine=profile.engine,
+                    env_names=list(engine_cfg.api_key_env),
+                    api_key_command=engine_cfg.api_key_command,
+                )
+            except Exception:
+                source = "(source unknown)"
+            checks.append(
+                {
+                    "name": "credentials",
+                    "ok": True,
+                    "detail": f"narrator '{narrator}': {source}",
+                }
+            )
         else:
             checks.append(
                 {
                     "name": "credentials",
                     "ok": True,
-                    "detail": f"narrator '{narrator}' (presence only)",
+                    "detail": f"narrator '{narrator}' (no credentials needed)",
                 }
             )
     else:

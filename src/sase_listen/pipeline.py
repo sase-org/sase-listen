@@ -55,6 +55,7 @@ from sase_listen.engines import (
     SynthesisRequest,
     TransientEngineError,
     create_engine,
+    hint_for_credentials_error,
     resolve_api_key,
     resolve_narrator,
     synthesize_with_retry,
@@ -838,6 +839,23 @@ def plan_episode(
     )
 
 
+def credentials_hint(
+    narrator: ResolvedNarrator, config: SaseListenConfig | None
+) -> str:
+    """Build a secret-free credential hint naming the key source."""
+    if config is None or narrator.engine not in ("gemini", "openai"):
+        return ""
+    try:
+        engine_cfg = getattr(config.engines, narrator.engine)
+    except AttributeError:
+        return ""
+    return hint_for_credentials_error(
+        engine=narrator.engine,
+        env_names=list(engine_cfg.api_key_env),
+        api_key_command=engine_cfg.api_key_command,
+    )
+
+
 def default_engine(narrator: ResolvedNarrator, config: SaseListenConfig) -> Engine:
     """Build the engine adapter for a resolved narrator (API keys included)."""
     if narrator.engine == "tone":
@@ -851,7 +869,11 @@ def default_engine(narrator: ResolvedNarrator, config: SaseListenConfig) -> Engi
                 api_key_command=engine_cfg.api_key_command,
             )
         except CredentialsError as exc:
-            raise SaseListenError(str(exc), ExitCode.CONFIG) from exc
+            raise SaseListenError(
+                str(exc),
+                ExitCode.CONFIG,
+                hint=credentials_hint(narrator, config),
+            ) from exc
         base_url = narrator.base_url or engine_cfg.base_url
         return create_engine(
             narrator.engine,
@@ -882,6 +904,7 @@ def synthesize_one(
     text: str,
     *,
     max_retries: int,
+    config: SaseListenConfig | None = None,
 ) -> tuple[bytes, int, int]:
     """Synthesize one chunk; return (pcm, sample_rate, attempts)."""
     calls = 0
@@ -905,7 +928,15 @@ def synthesize_one(
             _operation, max_retries=max_retries, sleep=time.sleep
         )
     except CredentialsError as exc:
-        raise SaseListenError(str(exc), ExitCode.CONFIG) from exc
+        hint = ""
+        effective = config
+        if effective is None:
+            try:
+                effective, _ = load_config()
+            except Exception:
+                effective = None
+        hint = credentials_hint(narrator, effective) if effective is not None else ""
+        raise SaseListenError(str(exc), ExitCode.CONFIG, hint=hint) from exc
     except (TransientEngineError, PermanentEngineError) as exc:
         raise SaseListenError(
             f"Synthesis failed after retries: {exc}.",
@@ -930,6 +961,7 @@ def synthesize_chunks(
     concurrency: int,
     use_cache: bool,
     events: RenderEvents,
+    config: SaseListenConfig | None = None,
 ) -> list[SynthesizedChunk]:
     """Synthesize every uncached chunk, caching each result immediately."""
     total = len(plan.chunks)
@@ -962,6 +994,7 @@ def synthesize_chunks(
                     narrator,
                     chunk.text,
                     max_retries=max_retries,
+                    config=config,
                 ): chunk
                 for chunk in pending
             }
@@ -1054,11 +1087,12 @@ def _resynthesize(
     use_cache: bool,
     events: RenderEvents,
     reason: str,
+    config: SaseListenConfig | None = None,
 ) -> SynthesizedChunk:
     """Re-synthesize one chunk with the cache bypassed, storing the result."""
     events.on_chunk_retried(made.planned.index, made.attempts + 1, reason)
     pcm, sample_rate, attempts = synthesize_one(
-        engine, narrator, made.planned.text, max_retries=max_retries
+        engine, narrator, made.planned.text, max_retries=max_retries, config=config
     )
     if use_cache:
         cache.put(
@@ -1088,6 +1122,7 @@ def run_chunk_gates(
     max_retries: int,
     use_cache: bool,
     events: RenderEvents,
+    config: SaseListenConfig | None = None,
 ) -> tuple[list[SynthesizedChunk], list[str], int]:
     """Apply hard gates (2 re-syntheses, then exit 5) and soft gates (1 + warn).
 
@@ -1112,6 +1147,7 @@ def run_chunk_gates(
                 use_cache=use_cache,
                 events=events,
                 reason=f"hard gate: {reason}",
+                config=config,
             )
             reason = hard_failure(made.pcm, made.wpm, made.sample_rate)
         current[pos] = made
@@ -1145,6 +1181,7 @@ def run_chunk_gates(
             use_cache=use_cache,
             events=events,
             reason=f"soft gate: {reason}",
+            config=config,
         )
         retried_idxs.add(made.planned.index)
         best = min((made, fresh), key=lambda m: abs(m.wpm - TARGET_WPM))
@@ -1629,6 +1666,7 @@ def render(
             concurrency=prepared.concurrency,
             use_cache=use_cache,
             events=listener,
+            config=cfg,
         )
         listener.on_stage("gates")
         final, gate_warnings, retried = run_chunk_gates(
@@ -1639,6 +1677,7 @@ def render(
             max_retries=prepared.max_retries,
             use_cache=use_cache,
             events=listener,
+            config=cfg,
         )
         listener.on_stage("master")
         pcm, starts, sample_rate = assemble_episode(final, plan, cfg)

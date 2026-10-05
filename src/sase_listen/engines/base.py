@@ -61,6 +61,22 @@ class CredentialsError(Exception):
     """Missing or rejected API credentials. Never retried."""
 
 
+def is_invalid_api_key(code: object, detail: str) -> bool:
+    """Return True when an HTTP status plus body means a rejected API key.
+
+    Shared by the Gemini TTS adapter (interactions API) and the Gemini
+    writer (generate_content API) so both classify 400 API_KEY_INVALID
+    the same way. 401/403 always mean credentials; 400 only counts when
+    the body names an invalid key.
+    """
+    if code in (401, 403):
+        return True
+    if code != 400:
+        return False
+    lowered = detail.lower()
+    return "api_key_invalid" in lowered or "api key not valid" in lowered
+
+
 class Engine(Protocol):
     """The interface every TTS adapter implements."""
 

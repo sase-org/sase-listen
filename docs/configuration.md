@@ -4,9 +4,11 @@
 
 API keys resolve from the first non-empty source in this order:
 
-1. Environment variables, per engine:
-   - Gemini: `SASE_LISTEN_GEMINI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`.
-   - OpenAI: `SASE_LISTEN_OPENAI_API_KEY`, `OPENAI_API_KEY`.
+1. Environment variables, per engine (`api_key_env`, configurable per
+   engine):
+   - Gemini default: `SASE_LISTEN_GEMINI_API_KEY`, `GEMINI_API_KEY`,
+     `GOOGLE_API_KEY`.
+   - OpenAI default: `SASE_LISTEN_OPENAI_API_KEY`, `OPENAI_API_KEY`.
 2. `api_key_command`, for example `pass show gemini_cli_api_key`. The
    command runs without a shell, has a 15 s timeout, and contributes its
    first output line.
@@ -17,10 +19,24 @@ engines:
     api_key_command: pass show gemini_cli_api_key
 ```
 
+Pin `api_key_env` when the shell exports unrelated generic keys. A stale
+generic `GEMINI_API_KEY` otherwise shadows the pass-managed key and every
+render fails with HTTP 400 `API_KEY_INVALID`:
+
+```yaml
+engines:
+  gemini:
+    # Only the tool-specific env var may override the pass-managed key.
+    api_key_env: [SASE_LISTEN_GEMINI_API_KEY]
+    api_key_command: pass show gemini_cli_api_key
+```
+
 Secrets never appear in logs, manifests, errors, or `config` output —
 failures name the missing source, never the value. `sase-listen doctor`
-checks credential presence offline today; the cli phase adds a
-`--online` one-word synth check that proves the key works.
+reports which source would supply the key (env-var presence only, never
+running the command), including when an env var overrides
+`engines.<engine>.api_key_command`. The cli phase adds a `--online`
+one-word synth check that proves the key works.
 
 ## Feed
 

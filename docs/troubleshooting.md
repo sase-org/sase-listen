@@ -1,5 +1,17 @@
 # Troubleshooting
 
+## `API_KEY_INVALID` / rejected credentials (exit 3)
+
+Gemini rejected the API key (HTTP 400 `API_KEY_INVALID`, or 401/403). The
+exit-3 hint names the credential source without revealing the value, for
+example `env GEMINI_API_KEY (overrides
+engines.gemini.api_key_command; presence only)`. When an env var wins while
+`api_key_command` is configured, unset it or pin
+`engines.<engine>.api_key_env` to the tool-specific variable (see
+[Credentials](configuration.md)). `sase-listen doctor` shows the winning
+source offline. This supersedes the old `env -u GEMINI_API_KEY …`
+workaround.
+
 ## `No API key found for <engine>`
 
 `render` needs credentials for cloud narrators. Either export the key
