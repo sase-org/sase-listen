@@ -11,7 +11,8 @@
   and are stamped as ID3 CHAP frames (plus a CTOC table) in milliseconds.
 - Tags are ID3v2.3 for maximum player compatibility (mutagen converts TDRC
   on save); the file carries no source metadata (`-map_metadata -1`) and
-  mastering writes through a temp file plus atomic replace, so an
+  mastering encodes the MP3 to a temp file beside its target and
+  atomically replaces it, so a tmpfs `/tmp` cannot break the rename and an
   interrupted render never leaves a half-written episode.
 
 ## Render pipeline (`sase-listen render`)

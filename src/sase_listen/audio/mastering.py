@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -335,8 +336,10 @@ def master_to_mp3(
 
     Pass 1 measures integrated loudness; pass 2 applies the measured values
     with ``linear=true`` and encodes ``-ar <rate> -ac 1 -c:a libmp3lame`` at
-    constant bitrate with a Xing header and no source metadata. Returns the
-    pass-2 output loudness, true peak, duration, and file size.
+    constant bitrate with a Xing header and no source metadata. The MP3 is
+    encoded to a temp file beside ``out_path`` so the final replace stays on
+    one filesystem. Returns the pass-2 output loudness, true peak, duration,
+    and file size.
     """
     ffmpeg.require_mastering()
     if len(pcm) == 0:
@@ -373,34 +376,43 @@ def master_to_mp3(
             f":offset={measured['target_offset']}"
             ":linear=true:print_format=json"
         )
-        staging = str(Path(tmp) / "episode.mp3")
-        pass2 = _run_ffmpeg(
-            [
-                ffmpeg.exe,
-                "-y",
-                "-hide_banner",
-                "-i",
-                wav_path,
-                "-af",
-                measured_filter,
-                "-ar",
-                str(sample_rate),
-                "-ac",
-                "1",
-                "-c:a",
-                "libmp3lame",
-                "-b:a",
-                f"{bitrate_kbps}k",
-                "-write_xing",
-                "1",
-                "-map_metadata",
-                "-1",
-                staging,
-            ],
-            "loudness normalization pass",
-        )
-        applied = _parse_loudnorm_json(pass2.stderr)
-        os.replace(staging, out)
+        # Encode beside the target so the final replace never crosses
+        # filesystems: the system temp dir is often tmpfs while the library
+        # is not, and rename(2) fails with EXDEV across devices.
+        fd, staging = tempfile.mkstemp(dir=out.parent, prefix=".tmp-", suffix=".mp3")
+        os.close(fd)
+        try:
+            pass2 = _run_ffmpeg(
+                [
+                    ffmpeg.exe,
+                    "-y",
+                    "-hide_banner",
+                    "-i",
+                    wav_path,
+                    "-af",
+                    measured_filter,
+                    "-ar",
+                    str(sample_rate),
+                    "-ac",
+                    "1",
+                    "-c:a",
+                    "libmp3lame",
+                    "-b:a",
+                    f"{bitrate_kbps}k",
+                    "-write_xing",
+                    "1",
+                    "-map_metadata",
+                    "-1",
+                    staging,
+                ],
+                "loudness normalization pass",
+            )
+            applied = _parse_loudnorm_json(pass2.stderr)
+            os.replace(staging, out)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(staging)
+            raise
     return MasterStats(
         duration_s=len(pcm) / sample_rate,
         loudness_lufs=applied["output_i"],

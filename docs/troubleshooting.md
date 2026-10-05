@@ -44,6 +44,17 @@ Transient API errors are retried with backoff; persistent failure exits 4.
 Check the network, confirm the key works, and try a cheaper narrator
 (`gemini-lite`) or `--no-cache` to rule out a poisoned cache entry.
 
+## `Invalid cross-device link` at `stage: master`
+
+The mastered MP3 was encoded under the system temp dir (`/tmp`, often
+tmpfs) and renamed into the library, but `rename(2)` fails with EXDEV
+across filesystems. Releases with the beside-the-target mastering fix are
+immune: upgrade with `uv tool install --force sase-listen` (or
+`uv tool install --force git+https://github.com/sase-org/sase-listen`),
+then re-run the same `render` command. Synthesized chunks and article
+scripts are cached, so it goes straight to master/tag/commit/publish with
+no new TTS or writer calls.
+
 ## `doctor --online` reports `online check not implemented yet`
 
 Expected: the live one-word synth check is a known stub (see

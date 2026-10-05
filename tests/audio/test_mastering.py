@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from sase_listen.audio import mastering
 from sase_listen.audio.ffmpeg import resolve_ffmpeg
 from sase_listen.audio.mastering import (
     AssembledEpisode,
@@ -17,6 +18,7 @@ from sase_listen.audio.mastering import (
     assemble,
     master_to_mp3,
 )
+from sase_listen.errors import SaseListenError
 
 from .helpers import SAMPLE_RATE, sine
 
@@ -104,3 +106,38 @@ def test_master_refuses_empty_pcm(tmp_path: Path) -> None:
             tmp_path / "empty.mp3",
             resolve_ffmpeg(),
         )
+
+
+def test_master_survives_separate_tmp_filesystem(
+    tmp_path: Path, tmp_on_separate_fs: Path
+) -> None:
+    episode = _build_episode()
+    library = tmp_path / "library"
+    library.mkdir()
+    out = library / "episode.mp3"
+    stats = master_to_mp3(episode.pcm, SAMPLE_RATE, out, resolve_ffmpeg())
+    assert out.stat().st_size > 10_000
+    assert stats.size_bytes == out.stat().st_size
+    assert sorted(p.name for p in library.iterdir()) == ["episode.mp3"]
+
+
+def test_master_failure_keeps_old_output_and_cleans_tmp(
+    tmp_path: Path, tmp_on_separate_fs: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    episode = _build_episode()
+    library = tmp_path / "library"
+    library.mkdir()
+    out = library / "episode.mp3"
+    out.write_bytes(b"old")
+    real_run = mastering._run_ffmpeg
+
+    def fake_run(args: list[str], what: str):  # type: ignore[no-untyped-def]
+        if what == "loudness normalization pass":
+            raise SaseListenError("Simulated pass-2 crash.")
+        return real_run(args, what)
+
+    monkeypatch.setattr(mastering, "_run_ffmpeg", fake_run)
+    with pytest.raises(SaseListenError):
+        master_to_mp3(episode.pcm, SAMPLE_RATE, out, resolve_ffmpeg())
+    assert out.read_bytes() == b"old"
+    assert [p for p in library.iterdir() if p.name.startswith(".tmp-")] == []

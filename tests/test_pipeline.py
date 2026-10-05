@@ -367,6 +367,17 @@ def test_render_tone_e2e(isolated: Path, tmp_path: Path) -> None:
     assert any(k.startswith("CTOC") for k in tag)
 
 
+def test_render_tone_e2e_separate_tmp_filesystem(
+    isolated: Path, tmp_path: Path, tmp_on_separate_fs: Path
+) -> None:
+    result = _render_tiny(tmp_path)
+    assert isinstance(result, RenderResult)
+    library = Path(os.environ["XDG_DATA_HOME"]) / "sase-listen" / "library"
+    mp3s = list((library / result.episode_id).glob("*.mp3"))
+    assert mp3s
+    assert all(p.stat().st_size > 1000 for p in mp3s)
+
+
 def test_render_golden_fixture_e2e(isolated: Path) -> None:
     fixture = (
         Path(__file__).parent
