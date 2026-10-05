@@ -23,6 +23,7 @@ from typing import Any
 
 from sase_listen.engines.base import (
     CANONICAL_SAMPLE_RATE,
+    ContentBlockedError,
     CredentialsError,
     EngineLimits,
     PermanentEngineError,
@@ -116,6 +117,21 @@ def _is_genai_compat_error(exc: Any) -> bool:
     return isinstance(module, str) and module.startswith("google.genai")
 
 
+def _is_content_blocked(exc: Any, code: int | None, detail: str) -> bool:
+    """Return True when a 400 means the policy filter blocked the text."""
+    if code != 400:
+        return False
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        try:
+            error = body.get("error")
+            if isinstance(error, dict) and error.get("code") == "content_blocked":
+                return True
+        except AttributeError:
+            pass
+    return "content_blocked" in detail.lower()
+
+
 def _map_api_error(exc: Any) -> Exception:
     code = _status_code(exc)
     detail = _error_detail(exc)
@@ -123,6 +139,10 @@ def _map_api_error(exc: Any) -> Exception:
         return TransientEngineError(f"Gemini connection failed: {detail or exc}.")
     if is_invalid_api_key(code, detail):
         return CredentialsError(f"Gemini rejected the API key (HTTP {code}).")
+    if _is_content_blocked(exc, code, detail):
+        return ContentBlockedError(
+            "Gemini's policy filter blocked the text (HTTP 400 content_blocked)"
+        )
     if code == 429:
         return TransientEngineError(
             f"Gemini rate-limited the request (HTTP {code}).",

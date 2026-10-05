@@ -30,14 +30,20 @@
   mastered MP3: it must decode, match the assembled duration within
   ±(1 s + 0.5%), carry the script's chapters in order, and land within 1 LU
   of the loudness target. Episodes over 45 MB warn (Telegram allows 50 MB).
+- **Content-blocked split-and-retry:** a chunk refused with HTTP 400
+  `content_blocked` is bisected (paragraphs, then sentences) and each
+  piece is synthesized separately, then stitched with the normal chunk
+  gap. Split chunks warn with their piece count; only a sentence
+  blocked on its own fails the render.
 - **Manifest:** every episode commits `manifest.json` recording the source,
-  script, narrator, lexicon, per-chunk attempts and cache keys, chapters,
-  audio measurements, gate results, omissions, and cost estimate.
+  script, narrator, lexicon, per-chunk attempts, piece counts, and cache keys,
+  chapters, audio measurements, gate results, omissions, and cost estimate.
 - **Atomicity:** files stage under `library/.staging/<episode-id>/` and move
   into place with atomic replaces, manifest last. An fcntl lock per episode
   id rejects concurrent renders of the same episode instead of clobbering.
 - **Exit codes:** 0 ok, 1 unexpected, 2 usage, 3 config/credentials,
-  4 synthesis failed after retries, 5 quality gate failed, 6 structural lint
+  4 synthesis failed (`Synthesis failed after retries` for transient errors),
+  5 quality gate failed, 6 structural lint
   errors (`render` refuses unless `--force`), 130 interrupted by Ctrl-C.
 - **Interrupts:** the first Ctrl-C stops queueing new chunks while running
   chunks finish and cache themselves, then exits 130 with a resume hint

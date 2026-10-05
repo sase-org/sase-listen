@@ -19,6 +19,7 @@ import pytest
 from sase_listen.cache import ChunkCache, cache_key
 from sase_listen.config import default_config
 from sase_listen.engines import (
+    ContentBlockedError,
     CredentialsError,
     PermanentEngineError,
     SynthesisRequest,
@@ -639,10 +640,12 @@ class _CompatError(Exception):
         status_code: int | None,
         message: str,
         headers: dict[str, str] | None = None,
+        body: object = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.response = SimpleNamespace(headers=headers or {})
+        self.body = body
 
 
 _CompatError.__module__ = "google.genai._gaos.lib.compat_errors"
@@ -724,6 +727,38 @@ def test_gemini_compat_400_invalid_key_message() -> None:
     assert isinstance(mapped, CredentialsError)
     mapped_plain = _map_api_error(_CompatError(400, "plain bad request"))
     assert isinstance(mapped_plain, PermanentEngineError)
+
+
+def test_gemini_content_blocked_taxonomy() -> None:
+    from sase_listen.engines.gemini import _map_api_error
+
+    body = {"error": {"code": "content_blocked", "message": "blocked"}}
+    mapped_body = _map_api_error(_CompatError(400, "request blocked", body=body))
+    assert isinstance(mapped_body, ContentBlockedError)
+    mapped_text = _map_api_error(
+        _CompatError(400, "Error code: 400 - {'error': {'code': 'content_blocked'}}")
+    )
+    assert isinstance(mapped_text, ContentBlockedError)
+    assert "content_blocked" in str(mapped_text).lower()
+    assert not str(mapped_text).endswith(".")
+    mapped_plain = _map_api_error(_CompatError(400, "something else broke"))
+    assert isinstance(mapped_plain, PermanentEngineError)
+    assert not isinstance(mapped_plain, ContentBlockedError)
+
+
+def test_content_blocked_is_permanent_and_never_retried() -> None:
+    assert issubclass(ContentBlockedError, PermanentEngineError)
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def _operation() -> str:
+        calls["n"] += 1
+        raise ContentBlockedError("blocked")
+
+    with pytest.raises(ContentBlockedError):
+        synthesize_with_retry(_operation, max_retries=3, sleep=sleeps.append)
+    assert calls["n"] == 1
+    assert sleeps == []
 
 
 def test_resolve_with_source_prefers_env() -> None:

@@ -8,6 +8,7 @@ import httpx
 
 from sase_listen.engines.base import (
     CANONICAL_SAMPLE_RATE,
+    ContentBlockedError,
     CredentialsError,
     Engine,
     EngineLimits,
@@ -30,6 +31,7 @@ from sase_listen.engines.tone import ToneEngine
 
 __all__ = [
     "CANONICAL_SAMPLE_RATE",
+    "ContentBlockedError",
     "CredentialsError",
     "Engine",
     "EngineLimits",

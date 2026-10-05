@@ -97,6 +97,16 @@ collection and paying technical debt down in small increments) synthesized
 cleanly. Follow-up: treat `content_blocked` as a split-and-retry signal
 rather than a hard episode failure.
 
+## 2026-10-05: second `content_blocked`, split-and-retry implemented
+
+The harness-design full edition hit `content_blocked` again on chunk 8
+("Results from the updated harness"): a dense run of song-composition
+wording (song snippet, melody, drum track, song composition, musical
+taste) that passes sentence by sentence but blocks as a whole. The
+split-and-retry follow-up is now implemented: blocked chunks bisect to
+paragraphs, then sentences, and only a sentence blocked on its own
+fails with a chunk/chapter/sentence error.
+
 ## Mac
 
 `ssh -o ConnectTimeout=10 mac true` timed out

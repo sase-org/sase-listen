@@ -15,6 +15,7 @@ from sase_listen.cache import ChunkCache
 from sase_listen.cli.app import main
 from sase_listen.config import DEFAULT_INTRO_TEMPLATE, default_config
 from sase_listen.engines import (
+    ContentBlockedError,
     CredentialsError,
     EngineLimits,
     PermanentEngineError,
@@ -345,6 +346,7 @@ def test_render_tone_e2e(isolated: Path, tmp_path: Path) -> None:
         "duration_s",
         "attempts",
         "cached",
+        "pieces",
     }
     assert {c["title"] for c in manifest["chapters"]} == {
         "First chapter",
@@ -1263,3 +1265,154 @@ def test_generated_cover_tone_render_embeds_card(
     tag = ID3(str(Path(outcome.audio_path)))
     assert tag["APIC:Cover"].data == expected  # type: ignore[attr-defined]
     assert Path(source).read_text(encoding="utf-8") == before
+
+
+# --- Content-blocked split-and-retry ---
+
+
+class PolicyEngine(ToneEngine):
+    """Fails when the text contains both markers (context-dependent block)."""
+
+    def __init__(self, marker_a: str = "MELODY", marker_b: str = "DRUMS") -> None:
+        self.marker_a = marker_a
+        self.marker_b = marker_b
+        self.seen: list[str] = []
+
+    def synthesize(self, request: SynthesisRequest) -> SynthesisResult:
+        self.seen.append(request.text)
+        if self.marker_a in request.text and self.marker_b in request.text:
+            raise ContentBlockedError(
+                "Gemini's policy filter blocked the text (HTTP 400 content_blocked)"
+            )
+        return super().synthesize(request)
+
+    def limits(self, model: str) -> EngineLimits:
+        return EngineLimits(max_chars=20000, target_words=400, default_concurrency=1)
+
+
+def _split_script(title: str, body: str) -> str:
+    return (
+        "---\nnarration: 1\n"
+        f"title: {title}\nkind: document\nedition: verbatim\nproducer: agent\n---\n"
+        f"\n## Chapter One\n\n{body}\n"
+    )
+
+
+_PARA_BODY = (
+    "First paragraph carries MELODY here.\n\nSecond paragraph carries DRUMS here."
+)
+_SENT_BODY = "First sentence carries MELODY here. Second sentence carries DRUMS here."
+_TERM_BODY = "This sentence carries MELODY and DRUMS together in one breath."
+
+
+def test_blocked_recovers_across_paragraphs(isolated: Path, tmp_path: Path) -> None:
+    from sase_listen.library import read_manifest
+
+    source = _write(
+        tmp_path, "split_para_narration.md", _split_script("Split Para", _PARA_BODY)
+    )
+    engine = PolicyEngine()
+    outcome = render(RenderRequest(source=source, narrator="tone"), engine=engine)
+    assert isinstance(outcome, RenderResult)
+    # Each paragraph was sent separately after the blocked whole-chunk call.
+    assert any(text == "First paragraph carries MELODY here." for text in engine.seen)
+    assert any(text == "Second paragraph carries DRUMS here." for text in engine.seen)
+    split_warnings = [w for w in outcome.warnings if "content_blocked" in w]
+    assert len(split_warnings) == 1
+    assert "Chapter One" in split_warnings[0]
+    assert "pieces." in split_warnings[0]
+    library = Path(os.environ["XDG_DATA_HOME"]) / "sase-listen" / "library"
+    manifest = read_manifest(outcome.episode_id, library)
+    assert isinstance(manifest["chunks"], list)
+    pieces = [c["pieces"] for c in manifest["chunks"]]
+    assert max(pieces) > 1
+
+
+def test_blocked_recovers_across_sentences(isolated: Path, tmp_path: Path) -> None:
+    source = _write(
+        tmp_path, "split_sent_narration.md", _split_script("Split Sent", _SENT_BODY)
+    )
+    engine = PolicyEngine()
+    outcome = render(RenderRequest(source=source, narrator="tone"), engine=engine)
+    assert isinstance(outcome, RenderResult)
+    assert any("content_blocked" in w for w in outcome.warnings)
+
+
+def test_blocked_cached_on_rerun(isolated: Path, tmp_path: Path) -> None:
+    source = _write(
+        tmp_path,
+        "split_cache_narration.md",
+        _split_script("Split Cache", _PARA_BODY),
+    )
+    first = render(RenderRequest(source=source, narrator="tone"), engine=PolicyEngine())
+    assert isinstance(first, RenderResult)
+    assert any("content_blocked" in w for w in first.warnings)
+    counting = CountingEngine()
+    second = render(RenderRequest(source=source, narrator="tone"), engine=counting)
+    assert isinstance(second, RenderResult)
+    assert counting.calls == 0
+    assert any("content_blocked" in w for w in second.warnings)
+
+
+def test_blocked_stitch_shape() -> None:
+    import numpy as np
+
+    from sase_listen.audio import trim_silence
+    from sase_listen.config import default_config
+    from sase_listen.engines.tone import render_pcm
+    from sase_listen.pipeline import prepare, synthesize_one
+
+    opened = prepare(RenderRequest(source="x", narrator="tone"), engine=ToneEngine())
+    pcm, rate, _attempts, pieces = synthesize_one(
+        PolicyEngine(), opened.narrator, _PARA_BODY, max_retries=0
+    )
+    assert pieces == 2
+    assert rate == 24000
+    first_raw = render_pcm("First paragraph carries MELODY here.")
+    second_raw = render_pcm("Second paragraph carries DRUMS here.")
+    first = trim_silence(
+        np.frombuffer(first_raw, dtype=np.int16).copy(),
+        24000,
+    )
+    second = trim_silence(
+        np.frombuffer(second_raw, dtype=np.int16).copy(),
+        24000,
+    )
+    gap_s = default_config().audio.chunk_gap_s
+    expected_s = (len(first) + len(second)) / rate + gap_s
+    actual_s = len(np.frombuffer(pcm, dtype=np.int16)) / rate
+    assert abs(actual_s - expected_s) < 0.05
+    assert hard_failure(pcm, 150.0, rate) is None or "pace" in str(
+        hard_failure(pcm, 150.0, rate)
+    )
+
+
+def test_blocked_terminal_failure(isolated: Path, tmp_path: Path) -> None:
+    source = _write(
+        tmp_path, "split_term_narration.md", _split_script("Split Term", _TERM_BODY)
+    )
+    with pytest.raises(SaseListenError) as exc_info:
+        render(RenderRequest(source=source, narrator="tone"), engine=PolicyEngine())
+    err = exc_info.value
+    assert err.code == ExitCode.SYNTHESIS_FAILED
+    message = str(err)
+    assert "Chapter One" in message
+    assert "MELODY" in message or "melody" in message.lower()
+    assert "Chunk" in message and "/" in message
+    assert "rephrase" in err.hint.lower()
+    assert str(tmp_path) in err.hint or "split_term_narration.md" in err.hint
+    assert "Re-run to resume" not in err.hint
+
+
+def test_permanent_error_message_hygiene(isolated: Path, tmp_path: Path) -> None:
+    script = TINY_SCRIPT.replace("good measure.", "good measure MELTDOWN.")
+    source = _write(tmp_path, "hygiene_narration.md", script)
+    with pytest.raises(SaseListenError) as exc_info:
+        render(
+            RenderRequest(source=source, narrator="tone"),
+            engine=MarkerFailEngine("MELTDOWN"),
+        )
+    err = exc_info.value
+    assert err.code == ExitCode.SYNTHESIS_FAILED
+    assert "after retries" not in str(err)
+    assert ".." not in str(err)

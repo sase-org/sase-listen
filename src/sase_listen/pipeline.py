@@ -49,6 +49,7 @@ from sase_listen.config import (
     load_config,
 )
 from sase_listen.engines import (
+    ContentBlockedError,
     CredentialsError,
     Engine,
     PermanentEngineError,
@@ -382,6 +383,7 @@ class SynthesizedChunk:
     cached: bool
     duration_s: float = 0.0
     wpm: float = 0.0
+    pieces: int = 1
 
     def measure(self) -> None:
         """Fill in duration and pace from the PCM payload."""
@@ -1091,6 +1093,53 @@ def transport_tuning(
     return max(1, engine.limits(narrator.model).default_concurrency), 4
 
 
+def _clean_detail(exc: BaseException) -> str:
+    """Strip trailing periods so wrapped messages never end in `..`."""
+    text = str(exc).strip()
+    stripped = text.rstrip()
+    while stripped.endswith("."):
+        stripped = stripped[:-1].rstrip()
+    return stripped or text
+
+
+def _truncate_sentence(sentence: str, *, limit: int = 160) -> str:
+    """Collapse whitespace and truncate a blocked sentence for messages."""
+    collapsed = " ".join(sentence.split())
+    if len(collapsed) > limit:
+        return collapsed[: limit - 3].rstrip() + "..."
+    return collapsed
+
+
+def _content_blocked_hint(script_path: str) -> str:
+    """Hint for a terminal content-blocked sentence."""
+    if script_path:
+        return (
+            "Re-running will not help (the block is deterministic). "
+            f"Rephrase the sentence in the narration script ({script_path}) "
+            "and re-render (unchanged chunks come from the cache), "
+            "or try another narrator (`-n openai`)."
+        )
+    return (
+        "Re-running will not help (the block is deterministic). "
+        "Rephrase the sentence in the narration script and re-render "
+        "(unchanged chunks come from the cache), "
+        "or try another narrator (`-n openai`)."
+    )
+
+
+def _split_block_units(text: str) -> tuple[list[str], str]:
+    """Split blocked text into bisectable units (paragraphs, else sentences)."""
+    paras = [
+        part.strip() for part in re.split(r"\n\s*\n", text.strip()) if part.strip()
+    ]
+    if len(paras) > 1:
+        return paras, "\n\n"
+    sents = [part for part in split_sentences(text) if part.strip()]
+    if not sents:
+        return [text], " "
+    return sents, " "
+
+
 def synthesize_one(
     engine: Engine,
     narrator: ResolvedNarrator,
@@ -1099,16 +1148,18 @@ def synthesize_one(
     max_retries: int,
     config: SaseListenConfig | None = None,
     on_retry: Callable[[RetryWait], None] | None = None,
-) -> tuple[bytes, int, int]:
-    """Synthesize one chunk; return (pcm, sample_rate, attempts)."""
+    chunk_label: str = "",
+    script_path: str = "",
+) -> tuple[bytes, int, int, int]:
+    """Synthesize one chunk; return (pcm, sample_rate, attempts, pieces)."""
     calls = 0
 
-    def _operation() -> tuple[bytes, int]:
+    def _attempt(piece_text: str) -> tuple[bytes, int]:
         nonlocal calls
         calls += 1
         result = engine.synthesize(
             SynthesisRequest(
-                text=text,
+                text=piece_text,
                 model=narrator.model,
                 voice=narrator.voice,
                 style=narrator.style,
@@ -1117,10 +1168,78 @@ def synthesize_one(
         )
         return result.pcm, result.sample_rate
 
-    try:
-        pcm, sample_rate = synthesize_with_retry(
+    def _run_with_retry(piece_text: str) -> tuple[bytes, int]:
+        def _operation() -> tuple[bytes, int]:
+            return _attempt(piece_text)
+
+        return synthesize_with_retry(
             _operation, max_retries=max_retries, sleep=time.sleep, on_retry=on_retry
         )
+
+    def _collect(piece: str) -> list[tuple[bytes, int]]:
+        try:
+            pcm_piece, rate_piece = _run_with_retry(piece)
+            return [(pcm_piece, rate_piece)]
+        except ContentBlockedError:
+            units, joiner = _split_block_units(piece)
+            if len(units) <= 1:
+                sentence = units[0] if units else piece
+                raise ContentBlockedError(
+                    "Gemini's policy filter blocked the text "
+                    "(HTTP 400 content_blocked)",
+                    text=sentence,
+                ) from None
+            mid = len(units) // 2
+            left = joiner.join(units[:mid])
+            right = joiner.join(units[mid:])
+            return _collect(left) + _collect(right)
+
+    prefix = f"{chunk_label}: " if chunk_label else ""
+
+    try:
+        pcm, sample_rate = _run_with_retry(text)
+        return pcm, sample_rate, calls, 1
+    except ContentBlockedError as whole_blocked:
+        units0, joiner0 = _split_block_units(text)
+        terminal_text: str | None = None
+        if len(units0) <= 1:
+            terminal_text = getattr(whole_blocked, "text", None) or units0[0]
+        else:
+            mid0 = len(units0) // 2
+            try:
+                pieces = _collect(joiner0.join(units0[:mid0])) + _collect(
+                    joiner0.join(units0[mid0:])
+                )
+            except ContentBlockedError as terminal:
+                terminal_text = (
+                    getattr(terminal, "text", None)
+                    or getattr(whole_blocked, "text", None)
+                    or text
+                )
+            else:
+                first_rate = pieces[0][1]
+                gap_s = config.audio.chunk_gap_s if config is not None else 0.5
+                trimmed_parts: list[np.ndarray] = []
+                for pcm_part, rate_part in pieces:
+                    arr = _pcm_to_int16(pcm_part)
+                    trim_rate = rate_part if rate_part else first_rate
+                    trimmed = trim_silence(arr, trim_rate)
+                    if rate_part != first_rate and rate_part and first_rate:
+                        trimmed = resample(trimmed, rate_part, first_rate)
+                    trimmed_parts.append(trimmed)
+                gap_n = round(gap_s * first_rate) if first_rate else 0
+                gap = np.zeros(max(0, gap_n), dtype=np.int16)
+                stitched = trimmed_parts[0]
+                for part in trimmed_parts[1:]:
+                    stitched = np.concatenate([stitched, gap, part])
+                return stitched.tobytes(), first_rate, calls, len(pieces)
+        sentence = _truncate_sentence(str(terminal_text or text))
+        raise SaseListenError(
+            f"{prefix}Gemini's policy filter blocked a sentence even on its own: "
+            f'"{sentence}"',
+            ExitCode.SYNTHESIS_FAILED,
+            hint=_content_blocked_hint(script_path),
+        ) from whole_blocked
     except CredentialsError as exc:
         hint = ""
         effective = config
@@ -1131,19 +1250,35 @@ def synthesize_one(
                 effective = None
         hint = credentials_hint(narrator, effective) if effective is not None else ""
         raise SaseListenError(str(exc), ExitCode.CONFIG, hint=hint) from exc
-    except (TransientEngineError, PermanentEngineError) as exc:
+    except TransientEngineError as exc:
+        detail = _clean_detail(exc)
         raise SaseListenError(
-            f"Synthesis failed after retries: {exc}.",
+            f"{prefix}Synthesis failed after retries: {detail}.",
             ExitCode.SYNTHESIS_FAILED,
             hint="Re-run to resume from the chunk cache, or try another narrator.",
+        ) from exc
+    except PermanentEngineError as exc:
+        detail = _clean_detail(exc)
+        raise SaseListenError(
+            f"{prefix}Synthesis failed: {detail}.",
+            ExitCode.SYNTHESIS_FAILED,
+            hint=(
+                "This was a permanent rejection and will fail the same way "
+                "on re-run; fix the input or try another narrator."
+            ),
         ) from exc
     except Exception as exc:
+        detail = _clean_detail(exc)
         raise SaseListenError(
-            f"Synthesis failed: {exc}.",
+            f"{prefix}Synthesis failed: {detail}.",
             ExitCode.SYNTHESIS_FAILED,
             hint="Re-run to resume from the chunk cache, or try another narrator.",
         ) from exc
-    return pcm, sample_rate, calls
+
+
+def _chunk_label(chunk: PlannedChunk, total: int) -> str:
+    """1-based chunk label matching the `[8/10]` progress display."""
+    return f'Chunk {chunk.index + 1}/{total} ("{chunk.chapter}")'
 
 
 def synthesize_chunks(
@@ -1172,12 +1307,17 @@ def synthesize_chunks(
         if use_cache:
             hit = cache.get(chunk.cache_key)
             if hit is not None:
+                try:
+                    cached_pieces = int(hit.usage.get("pieces", 1))
+                except (AttributeError, TypeError, ValueError):
+                    cached_pieces = 1
                 made = SynthesizedChunk(
                     planned=chunk,
                     pcm=hit.pcm,
                     sample_rate=hit.sample_rate,
                     attempts=0,
                     cached=True,
+                    pieces=cached_pieces if cached_pieces >= 1 else 1,
                 )
                 made.measure()
                 out[chunk.index] = made
@@ -1199,13 +1339,15 @@ def synthesize_chunks(
         def _retry(wait: RetryWait) -> None:
             events.on_retry_wait(Stage.SYNTHESIZE.value, chunk.index, wait)
 
-        pcm, sample_rate, attempts = synthesize_one(
+        pcm, sample_rate, attempts, pieces = synthesize_one(
             engine,
             narrator,
             chunk.text,
             max_retries=max_retries,
             config=config,
             on_retry=_retry,
+            chunk_label=_chunk_label(chunk, total),
+            script_path=plan.script_path,
         )
         if use_cache:
             cache.put(
@@ -1213,7 +1355,11 @@ def synthesize_chunks(
                 pcm,
                 sample_rate=sample_rate,
                 words=chunk.words,
-                usage={"engine": narrator.engine, "model": narrator.model},
+                usage={
+                    "engine": narrator.engine,
+                    "model": narrator.model,
+                    "pieces": pieces,
+                },
             )
         made = SynthesizedChunk(
             planned=chunk,
@@ -1221,6 +1367,7 @@ def synthesize_chunks(
             sample_rate=sample_rate,
             attempts=attempts,
             cached=False,
+            pieces=pieces,
         )
         made.measure()
         events.on_chunk_finished(chunk.index, total, cached=False)
@@ -1314,6 +1461,7 @@ def _resynthesize(
     events: RenderEvents,
     reason: str,
     config: SaseListenConfig | None = None,
+    chunk_label: str = "",
 ) -> SynthesizedChunk:
     """Re-synthesize one chunk with the cache bypassed, storing the result."""
     events.on_chunk_retried(made.planned.index, made.attempts + 1, reason)
@@ -1322,13 +1470,14 @@ def _resynthesize(
     def _gate_retry(wait: RetryWait) -> None:
         events.on_retry_wait(Stage.GATES.value, index, wait)
 
-    pcm, sample_rate, attempts = synthesize_one(
+    pcm, sample_rate, attempts, pieces = synthesize_one(
         engine,
         narrator,
         made.planned.text,
         max_retries=max_retries,
         config=config,
         on_retry=_gate_retry,
+        chunk_label=chunk_label,
     )
     if use_cache:
         cache.put(
@@ -1336,7 +1485,11 @@ def _resynthesize(
             pcm,
             sample_rate=sample_rate,
             words=made.planned.words,
-            usage={"engine": narrator.engine, "model": narrator.model},
+            usage={
+                "engine": narrator.engine,
+                "model": narrator.model,
+                "pieces": pieces,
+            },
         )
     fresh = SynthesizedChunk(
         planned=made.planned,
@@ -1344,6 +1497,7 @@ def _resynthesize(
         sample_rate=sample_rate,
         attempts=made.attempts + attempts,
         cached=False,
+        pieces=pieces,
     )
     fresh.measure()
     return fresh
@@ -1368,6 +1522,7 @@ def run_chunk_gates(
     current = list(synthesized)
     retried_idxs: set[int] = set()
     hard_report: list[str] = []
+    gate_total = len(synthesized)
     for pos, made in enumerate(current):
         made.measure()
         reason = hard_failure(made.pcm, made.wpm, made.sample_rate)
@@ -1384,6 +1539,7 @@ def run_chunk_gates(
                 events=events,
                 reason=f"hard gate: {reason}",
                 config=config,
+                chunk_label=_chunk_label(made.planned, gate_total),
             )
             reason = hard_failure(made.pcm, made.wpm, made.sample_rate)
         current[pos] = made
@@ -1419,6 +1575,7 @@ def run_chunk_gates(
             events=events,
             reason=f"soft gate: {reason}",
             config=config,
+            chunk_label=_chunk_label(made.planned, gate_total),
         )
         retried_idxs.add(made.planned.index)
         best = min((made, fresh), key=lambda m: abs(m.wpm - TARGET_WPM))
@@ -1950,6 +2107,13 @@ def render(
             summarize_gates(len(final), retried, warnings=gate_warnings),
             warning=bool(gate_warnings),
         )
+        split_warnings = [
+            f"Chunk {made.planned.index + 1} ({made.planned.chapter}): "
+            "Gemini blocked the full chunk (content_blocked); "
+            f"synthesized it in {made.pieces} pieces."
+            for made in final
+            if made.pieces > 1
+        ]
         listener.on_stage(Stage.MASTER.value)
         listener.on_step(
             Stage.MASTER.value, f"assembling {len(loaded.script.chapters)} chapter(s)"
@@ -2025,7 +2189,7 @@ def render(
             target_lufs=cfg.audio.loudness_lufs,
             loudness_lufs=stats.loudness_lufs,
         )
-        warnings = plan.warnings + gate_warnings + size_warnings
+        warnings = plan.warnings + gate_warnings + split_warnings + size_warnings
         actual_cached = sum(1 for made in final if made.cached)
         actual_synthesized = len(final) - actual_cached
         cost = estimate(prepared.narrator.model, stats.duration_s)
@@ -2084,6 +2248,7 @@ def render(
                     "duration_s": round(made.duration_s, 3),
                     "attempts": made.attempts,
                     "cached": made.cached,
+                    "pieces": made.pieces,
                 }
                 for made in final
             ],

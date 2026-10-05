@@ -47,11 +47,33 @@ number-dense, or symbol-heavy passages are the usual cause. Split the chunk's
 paragraph at sentence boundaries, spell out symbols as words, and re-render —
 unchanged chunks come back from the cache.
 
-## Synthesis failed after retries (exit 4)
+## Synthesis failed (exit 4)
 
-Transient API errors are retried with backoff; persistent failure exits 4.
-Check the network, confirm the key works, and try a cheaper narrator
+Transient API errors are retried with backoff and exit as
+`Synthesis failed after retries`. Permanent rejections (bad input,
+policy blocks) are not retried and exit as `Synthesis failed`. Check
+the network, confirm the key works, and try a cheaper narrator
 (`gemini-lite`) or `--no-cache` to rule out a poisoned cache entry.
+
+## Gemini blocked the text (`content_blocked`)
+
+Gemini TTS sometimes refuses a chunk with HTTP 400 `content_blocked`
+(a context-dependent policy filter, most often its music/singing
+restriction). The block is deterministic: re-running the same text
+fails the same way.
+
+`sase-listen` automatically splits a blocked chunk into smaller pieces
+(paragraphs, then sentences), synthesizes each piece, and stitches
+them with the normal chunk gap. A successful split leaves a render
+warning such as `Chunk 8 (Results from the updated harness): Gemini
+blocked the full chunk (content_blocked); synthesized it in 5 pieces.`
+
+When a single sentence is blocked even on its own, the render fails
+with `Gemini's policy filter blocked a sentence even on its own`,
+naming the chunk position, chapter, and sentence. Rephrase that
+sentence in the narration script (path given in the error) and
+re-render (unchanged chunks come from the cache), or render with
+another narrator (`-n openai`).
 
 ## `Invalid cross-device link` while mastering (`Master audio`)
 

@@ -57,6 +57,18 @@ class PermanentEngineError(Exception):
     """Non-retryable failure: bad input, unknown model, undecodable audio."""
 
 
+class ContentBlockedError(PermanentEngineError):
+    """The provider's policy filter refused this exact input.
+
+    Re-sending it unchanged will fail again, but the same words often go
+    through in smaller pieces.
+    """
+
+    def __init__(self, message: str, *, text: str | None = None) -> None:
+        super().__init__(message)
+        self.text = text
+
+
 class CredentialsError(Exception):
     """Missing or rejected API credentials. Never retried."""
 
