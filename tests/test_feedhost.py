@@ -662,3 +662,40 @@ def test_auto_publish_queues_when_host_down(
     assert payload["ok"] is True
     assert any("queued" in warning for warning in payload["warnings"])
     assert pending_publishes()
+
+
+def test_receive_supersedes_same_title(isolated: Path, tmp_path: Path) -> None:
+    cfg, _feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-a-111111", title="Same Title")
+    blob_a = pack_episode("ep-a-111111", lib_dir)
+    host_lib = tmp_path / "host-library"
+    host_feed = tmp_path / "host-feed"
+    cfg.feed.dir = str(host_feed)
+    first = receive_episode("ep-a-111111", blob_a, cfg, library=host_lib)
+    assert first["superseded"] == []
+    assert first["replaced"] is False
+    _write_library_episode(lib_dir, "ep-b-222222", title="Same Title")
+    blob_b = pack_episode("ep-b-222222", lib_dir)
+    second = receive_episode("ep-b-222222", blob_b, cfg, library=host_lib)
+    assert second["superseded"] == ["ep-a-111111"]
+    assert second["replaced"] is False
+    assert second["receive_protocol"] == 1
+    assert not (host_feed / "episodes" / "ep-a-111111").exists()
+    ids = [entry.episode_id for entry in list_feed_episodes(host_feed)]
+    assert ids == ["ep-b-222222"]
+
+
+def test_older_host_payload_without_new_keys_is_tolerated() -> None:
+    from sase_listen.feed import replacement_notice
+
+    older: dict[str, object] = {
+        "episode_id": "ep-a-111111",
+        "host": "apollo",
+        "via": "apollo",
+    }
+    raw = older.get("superseded", [])
+    superseded = [str(item) for item in raw] if isinstance(raw, list) else []
+    replaced = bool(older.get("replaced", False))
+    assert superseded == []
+    assert replaced is False
+    assert replacement_notice(superseded, replaced) == ""

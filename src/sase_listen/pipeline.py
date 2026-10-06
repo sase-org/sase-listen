@@ -67,7 +67,7 @@ from sase_listen.engines.tone import ToneEngine
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.events import RenderEvents as RenderEvents
 from sase_listen.events import Stage
-from sase_listen.feed import mark_manifest_published
+from sase_listen.feed import mark_manifest_published, replacement_notice
 from sase_listen.feedhost import PENDING_HINT, feed_role, publish_any, queue_publish
 from sase_listen.lexicon import Lexicon, load_merged
 from sase_listen.library import (
@@ -2436,6 +2436,16 @@ def render(
             published = True
             publish_host = str(published_info.get("host") or "")
             via = str(published_info.get("via") or "")
+            raw_superseded = published_info.get("superseded", [])
+            superseded = (
+                [str(item) for item in raw_superseded]
+                if isinstance(raw_superseded, list)
+                else []
+            )
+            replaced = bool(published_info.get("replaced", False))
+            notice = replacement_notice(superseded, replaced)
+            if notice:
+                warnings.append(notice)
             if via and via != "local":
                 listener.on_stage_done(
                     Stage.PUBLISH.value, f"{publish_host} (via {via})"

@@ -70,10 +70,30 @@ system as episode covers.
   `itunes:explicit` (`false`) — the feed stays out of public indexes.
 - Items, newest first: title, an HTML description with the chapter list
   and a link to the source (research report or original article), a `guid` of
-  `<episode-id>@<audio-sha256[:8]>` (re-renders show up as fresh audio),
+  `<episode-id>@<audio-sha256[:8]>` (the guid changes on a re-render, but
+  AntennaPod matches items by enclosure URL and by same title + same day,
+  and keeps an already-downloaded file),
   `pubDate`, an `enclosure` with the real byte length, `itunes:duration`,
   `itunes:image`, `itunes:episodeType full`, and a `podcast:chapters`
   link to the per-episode chapters JSON.
+
+## Re-renders and same-title episodes
+
+Publishing keeps one feed item per title (feed copies only; the library
+keeps every episode). Publishing an episode removes other feed episodes
+with the same title, using the same title comparison AntennaPod uses
+(surrounding whitespace, `“…”`/`"…"`, and `—`/`-` ignored;
+case-sensitive otherwise).
+
+Whenever a publish replaces audio a podcast app may already have
+downloaded — a same-title replacement or a same-id re-render with
+different MP3 bytes — the CLI and `render --publish` report a
+replacement notice. In AntennaPod, delete the episode's download and
+download it again; a feed refresh alone will not swap a file that is
+already downloaded.
+
+For a same-title duplicate published before this change, remove it by
+hand: `sase-listen unpublish <id>`.
 
 ## Retention and auto-publish
 

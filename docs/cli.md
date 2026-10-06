@@ -168,7 +168,9 @@ sase-listen unpublish EPISODE [--json]
 `EPISODE` is an episode id, an episode MP3 path, or `--latest`.
 `--pending` flushes the retry outbox. `feed receive EPISODE_ID --json`
 is the internal host-only transport (stdin tar); do not call it by
-hand. See [Podcast feed](podcast-feed.md) and
+hand. `publish` supersedes same-title feed episodes (feed copies only;
+the library is kept) and reports `superseded`/`replaced` in `--json`.
+See [Podcast feed](podcast-feed.md) and
 [Multi-machine publish](multi-machine.md).
 
 ## Non-TTY and `NO_COLOR` behavior

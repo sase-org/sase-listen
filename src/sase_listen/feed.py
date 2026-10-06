@@ -57,6 +57,13 @@ CHANNEL_COVER_NAME = "cover.jpg"
 RECEIVE_PROTOCOL = 1
 FEED_LOCK_TIMEOUT_S = 120
 
+#: Told to the user whenever a publish replaces audio a podcast app may
+#: already have downloaded.
+STALE_DOWNLOAD_HINT = (
+    "Podcast apps keep audio they already downloaded: in AntennaPod, "
+    "delete this episode's download and download it again."
+)
+
 _feed_lock_state = threading.local()
 _feed_thread_lock = threading.Lock()
 
@@ -313,6 +320,52 @@ def apply_retention(
         shutil.rmtree(root / EPISODES_SUBDIR / entry.episode_id, ignore_errors=True)
         removed.append(entry.episode_id)
     return removed
+
+
+def canonical_title(title: str) -> str:
+    """Return the AntennaPod-equivalent canonical form of a feed title.
+
+    Mirrors AntennaPod's ``FeedItemDuplicateGuesser.canonicalizeTitle``:
+    strip surrounding whitespace, map ``“``/``”``/``„`` to ``"``, and map
+    em dash (U+2014 only) to ``-``. The comparison stays case-sensitive and
+    changes nothing else.
+    """
+    text = title.strip()
+    text = text.replace("“", '"').replace("”", '"').replace("„", '"')
+    return text.replace("—", "-")
+
+
+def replacement_notice(superseded: list[str], replaced: bool) -> str:
+    """Describe a publish that replaced already-downloadable audio."""
+    if superseded:
+        joined = ", ".join(superseded)
+        return (
+            f"Superseded {len(superseded)} same-title feed episode(s): "
+            f"{joined}. {STALE_DOWNLOAD_HINT}"
+        )
+    if replaced:
+        return f"Replaced this episode's earlier feed audio. {STALE_DOWNLOAD_HINT}"
+    return ""
+
+
+def _feed_manifest_title(episode_dir: Path) -> str | None:
+    """Return a feed copy's manifest title without hashing any MP3.
+
+    None when the manifest is missing or invalid (the caller skips it).
+    """
+    manifest_path = episode_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    import json as _json
+
+    try:
+        raw = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    title = raw.get("title")
+    return title if isinstance(title, str) else None
 
 
 def source_url_for(source: object, templates: dict[str, str]) -> str:
@@ -591,7 +644,14 @@ def publish_episode(
     library: Path | None = None,
     root: Path | None = None,
 ) -> dict[str, Any]:
-    """Copy an episode into the feed dir and regenerate ``feed.xml``."""
+    """Copy an episode into the feed dir and regenerate ``feed.xml``.
+
+    Keeps one feed item per title: other feed copies with the same
+    canonical title are superseded (their feed dirs removed). The library
+    is never touched. Reports ``superseded`` (sorted removed ids) and
+    ``replaced`` (True when this publish overwrote different MP3 bytes
+    under the same episode id).
+    """
     require_base_url(cfg)
     resolve_token(cfg)  # Fail before copying when the token is missing.
     lib = library if library is not None else library_dir()
@@ -611,15 +671,40 @@ def publish_episode(
             ExitCode.UNEXPECTED,
             hint="Re-render the episode, then publish again.",
         )
+    raw_title = manifest.get("title")
+    published_canonical = (
+        canonical_title(raw_title) if isinstance(raw_title, str) else ""
+    )
     with feed_lock():
         feed_dir = feed_root(cfg, root)
         dest = feed_dir / EPISODES_SUBDIR / episode_id
+        dest_mp3 = dest / src_mp3.name
+        replaced = False
+        if dest_mp3.is_file():
+            replaced = (
+                hashlib.sha256(dest_mp3.read_bytes()).hexdigest()
+                != hashlib.sha256(src_mp3.read_bytes()).hexdigest()
+            )
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src_mp3, dest / src_mp3.name)
         for name in ("cover.jpg", "chapters.json", "manifest.json"):
             candidate = src / name
             if candidate.is_file():
                 shutil.copyfile(candidate, dest / name)
+        superseded: list[str] = []
+        if published_canonical:
+            episodes_dir = feed_dir / EPISODES_SUBDIR
+            if episodes_dir.is_dir():
+                for child in sorted(episodes_dir.iterdir()):
+                    if not child.is_dir() or child.name == episode_id:
+                        continue
+                    other_title = _feed_manifest_title(child)
+                    if other_title is None:
+                        continue
+                    if canonical_title(other_title) == published_canonical:
+                        shutil.rmtree(child, ignore_errors=True)
+                        superseded.append(child.name)
+            superseded.sort()
         rebuilt = rebuild_feed(cfg, root=feed_dir)
     token = resolve_token(cfg)
     base = cfg.feed.base_url.strip().rstrip("/")
@@ -628,6 +713,8 @@ def publish_episode(
         "item_url": f"{base}/{token}/{EPISODES_SUBDIR}/{episode_id}/{src_mp3.name}",
         "episodes": rebuilt["episodes"],
         "removed": rebuilt["removed"],
+        "superseded": superseded,
+        "replaced": replaced,
     }
 
 

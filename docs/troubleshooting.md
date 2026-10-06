@@ -133,6 +133,15 @@ configured token, and the serving machine's tailnet policy grants the
 `funnel` node attribute. `sase-listen feed` (without `--show-url`) confirms
 the masked URL and last build time without leaking the token.
 
+## AntennaPod still plays the old audio after a re-render
+
+A re-render (or a same-title replacement) changes the feed, but
+AntennaPod keeps an already-downloaded file: it matches the re-render
+by enclosure URL, and a same-day same-title item by title, so the old
+audio keeps playing. Delete the episode's download in AntennaPod, then
+download it again (or stream it). The fresh download fetches the
+current feed audio.
+
 ## Episode over 45 MB warns
 
 Telegram allows 50 MB per audio message; episodes approaching that warn at

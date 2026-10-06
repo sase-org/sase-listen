@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `publish` keeps one feed item per title: publishing an episode
+  supersedes other feed episodes with the same title (feed copies only;
+  the library is kept) and reports `superseded`/`replaced`, with a
+  notice telling AntennaPod users to delete the old download and
+  download it again.
+
 - Gemini TTS now classifies interactions-API compat errors (duck-typed
   `status_code`) with the same table as `errors.APIError`, including 400
   `API_KEY_INVALID` as credentials, 429/5xx as transient with retry, and

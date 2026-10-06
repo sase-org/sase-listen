@@ -19,12 +19,15 @@ from sase_listen.errors import SaseListenError
 from sase_listen.feed import (
     ITUNES_NS,
     PODCAST_NS,
+    STALE_DOWNLOAD_HINT,
     build_feed_xml,
+    canonical_title,
     init_feed,
     list_feed_episodes,
     masked_subscribe_url,
     print_qr,
     publish_episode,
+    replacement_notice,
     resolve_episode_ref,
     resolve_token,
     source_url_for,
@@ -319,9 +322,15 @@ def test_guid_changes_on_rerender(isolated: Path, tmp_path: Path) -> None:
 
 def test_retention_age_and_max_episodes(isolated: Path, tmp_path: Path) -> None:
     cfg, feed_dir, lib_dir = _feed_config(tmp_path, max_episodes=2)
-    _write_library_episode(lib_dir, "ep-old-000001", created_days_ago=100)
-    _write_library_episode(lib_dir, "ep-new-000002", created_days_ago=1)
-    _write_library_episode(lib_dir, "ep-new-000003", created_days_ago=0)
+    _write_library_episode(
+        lib_dir, "ep-old-000001", title="Old Episode", created_days_ago=100
+    )
+    _write_library_episode(
+        lib_dir, "ep-new-000002", title="New Episode Two", created_days_ago=1
+    )
+    _write_library_episode(
+        lib_dir, "ep-new-000003", title="New Episode Three", created_days_ago=0
+    )
     publish_episode("ep-old-000001", cfg, library=lib_dir, root=feed_dir)
     # The 100-day-old episode exceeds the 90-day retention immediately.
     assert "ep-old-000001" not in [e.episode_id for e in list_feed_episodes(feed_dir)]
@@ -495,3 +504,175 @@ def test_empty_feed_xml_is_valid_rss(tmp_path: Path) -> None:
     assert channel is not None
     assert channel.findall("item") == []
     assert channel.findtext(f"{{{ITUNES_NS}}}block") == "yes"
+
+
+def test_publish_supersedes_same_title(isolated: Path, tmp_path: Path) -> None:
+    cfg, feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-a-111111", title="T")
+    first = publish_episode("ep-a-111111", cfg, library=lib_dir, root=feed_dir)
+    assert first["superseded"] == []
+    assert first["replaced"] is False
+    _write_library_episode(lib_dir, "ep-b-222222", title="T")
+    second = publish_episode("ep-b-222222", cfg, library=lib_dir, root=feed_dir)
+    assert second["superseded"] == ["ep-a-111111"]
+    assert second["replaced"] is False
+    assert not (feed_dir / "episodes" / "ep-a-111111").exists()
+    assert (feed_dir / "episodes" / "ep-b-222222").is_dir()
+    root = _parse(feed_dir / "feed.xml")
+    channel = root.find("channel")
+    assert channel is not None
+    items = channel.findall("item")
+    assert len(items) == 1
+    guid = items[0].findtext("guid")
+    assert guid and guid.startswith("ep-b-222222@")
+    # The library keeps every episode by design.
+    assert (lib_dir / "ep-a-111111" / "manifest.json").is_file()
+    assert second["removed"] == []
+
+
+def test_canonical_title_matches_antennapod_rules() -> None:
+    assert canonical_title("  T  ") == "T"
+    assert canonical_title("\u201cT\u201d") == '"T"'
+    assert canonical_title("\u201eT\u201c") == '"T"'
+    assert canonical_title("a \u2014 b") == "a - b"
+    # Case-sensitive: nothing else changes.
+    assert canonical_title("T") != canonical_title("t")
+    assert canonical_title("a \u2013 b") != canonical_title("a - b")
+    assert replacement_notice([], False) == ""
+
+
+def _superseded_for_titles(
+    tmp_path: Path, first_title: str, second_title: str
+) -> list[str]:
+    cfg, feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-a-111111", title=first_title)
+    publish_episode("ep-a-111111", cfg, library=lib_dir, root=feed_dir)
+    _write_library_episode(lib_dir, "ep-b-222222", title=second_title)
+    second = publish_episode("ep-b-222222", cfg, library=lib_dir, root=feed_dir)
+    result = second["superseded"]
+    assert isinstance(result, list)
+    return [str(item) for item in result]
+
+
+def test_canonicalization_supersede_variants(tmp_path: Path) -> None:
+    base = tmp_path / "ws"
+    assert _superseded_for_titles(base / "n1", "T", "  T  ") == ["ep-a-111111"]
+    assert _superseded_for_titles(base / "n2", '"T"', "\u201cT\u201d") == [
+        "ep-a-111111"
+    ]
+    assert _superseded_for_titles(base / "n3", "a \u2014 b", "a - b") == ["ep-a-111111"]
+
+
+def test_canonicalization_non_matches(tmp_path: Path) -> None:
+    base = tmp_path / "no"
+    assert _superseded_for_titles(base / "c1", "T", "t") == []
+    assert _superseded_for_titles(base / "c2", "a \u2013 b", "a - b") == []
+    assert _superseded_for_titles(base / "c3", "Title (Brief)", "Title (Full)") == []
+    assert _superseded_for_titles(base / "c4", "T", "") == []
+    assert _superseded_for_titles(base / "c5", "", "T") == []
+
+
+def test_publish_older_same_title_wins(isolated: Path, tmp_path: Path) -> None:
+    cfg, feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-new-000002", title="T", created_days_ago=0)
+    publish_episode("ep-new-000002", cfg, library=lib_dir, root=feed_dir)
+    _write_library_episode(lib_dir, "ep-old-000001", title="T", created_days_ago=5)
+    second = publish_episode("ep-old-000001", cfg, library=lib_dir, root=feed_dir)
+    assert second["superseded"] == ["ep-new-000002"]
+    assert not (feed_dir / "episodes" / "ep-new-000002").exists()
+    root = _parse(feed_dir / "feed.xml")
+    channel = root.find("channel")
+    assert channel is not None
+    items = channel.findall("item")
+    assert len(items) == 1
+    guid = items[0].findtext("guid")
+    assert guid and guid.startswith("ep-old-000001@")
+
+
+def test_replaced_flag_on_rerender(isolated: Path, tmp_path: Path) -> None:
+    cfg, feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-re-111111")
+    first = publish_episode("ep-re-111111", cfg, library=lib_dir, root=feed_dir)
+    assert first["replaced"] is False
+    assert first["superseded"] == []
+    # Identical bytes: not a replacement.
+    again = publish_episode("ep-re-111111", cfg, library=lib_dir, root=feed_dir)
+    assert again["replaced"] is False
+    assert again["superseded"] == []
+    first_guid = _parse(feed_dir / "feed.xml").findtext("channel/item/guid")
+    _write_library_episode(
+        lib_dir, "ep-re-111111", mp3_bytes=b"RE-RENDERED-MP3-DIFFERENT"
+    )
+    changed = publish_episode("ep-re-111111", cfg, library=lib_dir, root=feed_dir)
+    assert changed["replaced"] is True
+    assert changed["superseded"] == []
+    second_guid = _parse(feed_dir / "feed.xml").findtext("channel/item/guid")
+    assert first_guid and second_guid and first_guid != second_guid
+
+
+def test_replacement_notice_text() -> None:
+    hint = STALE_DOWNLOAD_HINT
+    assert hint.startswith("Podcast apps keep audio")
+    notice = replacement_notice(["ep-a-111111"], False)
+    assert notice.startswith("Superseded 1 same-title feed episode(s): ep-a-111111.")
+    assert notice.endswith(hint)
+    multi = replacement_notice(["ep-a-111111", "ep-b-222222"], False)
+    assert "ep-a-111111, ep-b-222222" in multi
+    assert multi.endswith(hint)
+    only_replaced = replacement_notice([], True)
+    assert only_replaced == f"Replaced this episode's earlier feed audio. {hint}"
+
+
+def test_publish_cli_supersede_text_and_json(
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import os
+
+    feed_dir = _write_feed_config(isolated, tmp_path, monkeypatch)
+    lib_root = Path(os.environ["XDG_DATA_HOME"]) / "sase-listen" / "library"
+    _write_library_episode(lib_root, "ep-a-111111", title="Same Title")
+    _write_library_episode(lib_root, "ep-b-222222", title="Same Title")
+    _write_library_episode(lib_root, "ep-c-333333", title="Same Title")
+    assert main(["publish", "ep-a-111111"]) == 0
+    capsys.readouterr()
+    assert main(["publish", "ep-b-222222"]) == 0
+    out = capsys.readouterr().out
+    assert "Superseded ep-a-111111 (same title)." in out
+    assert f"note: {STALE_DOWNLOAD_HINT}" in out
+    assert main(["publish", "ep-c-333333", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["superseded"] == ["ep-b-222222"]
+    assert payload["replaced"] is False
+    assert not (feed_dir / "episodes" / "ep-b-222222").exists()
+    assert (lib_root / "ep-a-111111" / "manifest.json").is_file()
+
+
+def test_render_same_title_publish_warns(
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    feed_dir = _write_feed_config(isolated, tmp_path, monkeypatch)
+    first_src = _write_script(tmp_path, "first_narration.md", TINY_RESEARCH_SCRIPT)
+    assert main(["render", first_src, "-n", "tone", "--publish", "--json"]) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["ok"] is True and first["published"] is True
+    second_src = _write_script(tmp_path, "second_narration.md", TINY_RESEARCH_SCRIPT)
+    assert main(["render", second_src, "-n", "tone", "--publish", "--json"]) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second["ok"] is True and second["published"] is True
+    assert second["episode_id"] != first["episode_id"]
+    assert any(
+        "Superseded 1 same-title feed episode(s)" in w for w in second["warnings"]
+    )
+    assert any(STALE_DOWNLOAD_HINT in w for w in second["warnings"])
+    assert main(["feed", "--json"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["episode_ids"] == [second["episode_id"]]
+    assert (feed_dir / "episodes" / second["episode_id"]).is_dir()
+    assert not (feed_dir / "episodes" / first["episode_id"]).exists()

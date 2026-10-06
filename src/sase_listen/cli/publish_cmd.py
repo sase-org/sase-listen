@@ -8,7 +8,12 @@ import json
 from sase_listen.cli.progress import activity
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
-from sase_listen.feed import resolve_episode_ref, unpublish_episode
+from sase_listen.feed import (
+    STALE_DOWNLOAD_HINT,
+    replacement_notice,
+    resolve_episode_ref,
+    unpublish_episode,
+)
 from sase_listen.feedhost import (
     PENDING_HINT,
     feed_role,
@@ -140,6 +145,17 @@ def run_publish(args: argparse.Namespace) -> int:
         print(f"Audio: {result['item_url']}")
         if result.get("via") and result.get("via") != "local":
             print(f"Host: {result.get('host')} (via {result.get('via')})")
+        raw_superseded = result.get("superseded", [])
+        superseded = (
+            [str(item) for item in raw_superseded]
+            if isinstance(raw_superseded, list)
+            else []
+        )
+        for other_id in superseded:
+            print(f"Superseded {other_id} (same title).")
+        notice = replacement_notice(superseded, bool(result.get("replaced", False)))
+        if notice:
+            print(f"note: {STALE_DOWNLOAD_HINT}")
     return int(ExitCode.OK)
 
 
