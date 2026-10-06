@@ -48,6 +48,42 @@ MAX_RECEIVE_BYTES = 256 * 1024 * 1024
 
 PENDING_HINT = "sase-listen publish --pending"
 
+PUBLICKEY_DENIED = "Permission denied (publickey"
+SSH_ADD_TIMEOUT_S = 10
+
+
+def describe_ssh_agent() -> str:
+    """Describe the SSH agent in the current environment.
+
+    Returns a sentence naming the agent state, or an empty string when the
+    agent state cannot be determined. This helper never raises: a missing
+    ``ssh-add`` binary, a timeout, or an ``OSError`` yields no description.
+    """
+    sock = os.environ.get("SSH_AUTH_SOCK", "").strip()
+    if not sock:
+        return "SSH_AUTH_SOCK is unset, so no SSH agent could offer a key"
+    try:
+        proc = subprocess.run(
+            ["ssh-add", "-l"],
+            capture_output=True,
+            timeout=SSH_ADD_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode == 1:
+        return f"the SSH agent at {sock} holds no identities"
+    if proc.returncode == 2:
+        return f"the SSH agent at {sock} is unreachable"
+    if proc.returncode == 0:
+        out = proc.stdout.decode("utf-8", errors="replace")
+        count = len([line for line in out.splitlines() if line.strip()])
+        return (
+            f"the SSH agent at {sock} holds {count} "
+            f"identit{'y' if count == 1 else 'ies'}, but the host accepted none"
+        )
+    return ""
+
 
 class FeedHostUnreachable(SaseListenError):
     """Every SSH destination failed at the transport layer."""
@@ -58,10 +94,22 @@ class FeedHostUnreachable(SaseListenError):
         message = f"feed host unreachable (tried {tried})"
         if line:
             message = f"{message}: {line}"
+        hint = "Check SSH BatchMode access and feed.host_ssh."
+        if PUBLICKEY_DENIED in last_stderr:
+            detail = describe_ssh_agent()
+            if detail:
+                message = f"{message} ({detail})"
+            dest = destinations[-1] if destinations else "the feed host"
+            hint = (
+                "SSH reached the host but no key was accepted; load the key "
+                "the host accepts into that agent (`ssh-add`), confirm "
+                f"`ssh -o BatchMode=yes {dest} true` from the same environment, "
+                f"then run `{PENDING_HINT}`."
+            )
         super().__init__(
             message,
             ExitCode.UNEXPECTED,
-            hint="Check SSH BatchMode access and feed.host_ssh.",
+            hint=hint,
         )
         self.destinations = list(destinations)
         self.last_stderr = last_stderr

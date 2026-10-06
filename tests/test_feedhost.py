@@ -317,6 +317,149 @@ def test_run_remote_fallback_error_and_too_old(
         run_remote(cfg, ["feed"])
 
 
+STUB_SSH_ADD = r"""#!/usr/bin/env python3
+import os, sys
+log = os.environ.get("SASE_LISTEN_STUB_SSH_ADD_LOG", "")
+if log:
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write(
+            "ssh-add called sock=%s\n" % os.environ.get("SSH_AUTH_SOCK", "UNSET")
+        )
+code = int(os.environ.get("SASE_LISTEN_STUB_SSH_ADD_EXIT", "1"))
+if code == 0:
+    for i in range(int(os.environ.get("SASE_LISTEN_STUB_SSH_ADD_IDENTITIES", "2"))):
+        sys.stdout.write(f"256 SHA256:FAKE{i} fake-{i} (ED25519)\n")
+raise SystemExit(code)
+"""
+
+
+def _install_stub_ssh_add(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Put a controllable ``ssh-add`` first on PATH for agent-state tests."""
+    bin_dir = tmp_path / "stub-bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "ssh-add"
+    script.write_text(STUB_SSH_ADD, encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    return bin_dir
+
+
+def _publickey_denied_config() -> Any:
+    cfg = default_config()
+    cfg.feed.host = "apollo"
+    cfg.feed.host_ssh = ["apollo"]
+    return cfg
+
+
+def _install_publickey_denied_ssh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_ssh(
+        tmp_path,
+        monkeypatch,
+        {
+            "apollo": {
+                "kind": "fail",
+                "exit": 255,
+                "stderr": "bryan@1.2.3.4: Permission denied (publickey).",
+            }
+        },
+    )
+
+
+def test_publickey_denial_names_empty_agent(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _publickey_denied_config()
+    _install_publickey_denied_ssh(tmp_path, monkeypatch)
+    _install_stub_ssh_add(tmp_path, monkeypatch)
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent/agent.1")
+    monkeypatch.setenv("SASE_LISTEN_STUB_SSH_ADD_EXIT", "1")
+    log = tmp_path / "ssh-add.log"
+    monkeypatch.setenv("SASE_LISTEN_STUB_SSH_ADD_LOG", str(log))
+
+    with pytest.raises(FeedHostUnreachable) as caught:
+        run_remote(cfg, ["feed"])
+
+    message = str(caught.value)
+    assert "Permission denied (publickey)" in message
+    assert "/tmp/fake-agent/agent.1" in message
+    assert "holds no identities" in message
+    assert "ssh -o BatchMode=yes apollo true" in caught.value.hint
+    assert "publish --pending" in caught.value.hint
+
+
+def test_publickey_denial_names_unreachable_agent(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _publickey_denied_config()
+    _install_publickey_denied_ssh(tmp_path, monkeypatch)
+    _install_stub_ssh_add(tmp_path, monkeypatch)
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent/agent.2")
+    monkeypatch.setenv("SASE_LISTEN_STUB_SSH_ADD_EXIT", "2")
+
+    with pytest.raises(FeedHostUnreachable) as caught:
+        run_remote(cfg, ["feed"])
+
+    message = str(caught.value)
+    assert "/tmp/fake-agent/agent.2" in message
+    assert "is unreachable" in message
+
+
+def test_publickey_denial_names_unset_sock(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _publickey_denied_config()
+    _install_publickey_denied_ssh(tmp_path, monkeypatch)
+    _install_stub_ssh_add(tmp_path, monkeypatch)
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+
+    with pytest.raises(FeedHostUnreachable) as caught:
+        run_remote(cfg, ["feed"])
+
+    assert "SSH_AUTH_SOCK is unset" in str(caught.value)
+
+
+def test_publickey_denial_names_loaded_agent(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _publickey_denied_config()
+    _install_publickey_denied_ssh(tmp_path, monkeypatch)
+    _install_stub_ssh_add(tmp_path, monkeypatch)
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent/agent.3")
+    monkeypatch.setenv("SASE_LISTEN_STUB_SSH_ADD_EXIT", "0")
+    monkeypatch.setenv("SASE_LISTEN_STUB_SSH_ADD_IDENTITIES", "2")
+
+    with pytest.raises(FeedHostUnreachable) as caught:
+        run_remote(cfg, ["feed"])
+
+    message = str(caught.value)
+    assert "/tmp/fake-agent/agent.3" in message
+    assert "holds 2 identities, but the host accepted none" in message
+
+
+def test_non_publickey_failure_never_probes_agent(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _publickey_denied_config()
+    _install_fake_ssh(
+        tmp_path,
+        monkeypatch,
+        {"apollo": {"kind": "fail", "exit": 255, "stderr": "ssh: connect failed"}},
+    )
+    _install_stub_ssh_add(tmp_path, monkeypatch)
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent/agent.4")
+    log = tmp_path / "ssh-add.log"
+    monkeypatch.setenv("SASE_LISTEN_STUB_SSH_ADD_LOG", str(log))
+
+    with pytest.raises(FeedHostUnreachable) as caught:
+        run_remote(cfg, ["feed"])
+
+    assert "SSH agent" not in str(caught.value)
+    assert caught.value.hint == "Check SSH BatchMode access and feed.host_ssh."
+    assert not log.exists()
+
+
 def test_end_to_end_remote_auto_publish(
     isolated: Path,
     tmp_path: Path,

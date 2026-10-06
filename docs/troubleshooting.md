@@ -108,6 +108,17 @@ output. Confirm `ssh -o BatchMode=yes apollo true`, then retry with
 `sase-listen publish --pending`. The episode stays in the local outbox
 until that succeeds.
 
+### `Permission denied (publickey)`
+
+SSH reached the host but accepted none of the offered keys. A
+passphrase-protected key needs a loaded agent in the environment that
+renders: the error names the agent state it found (no identities,
+unreachable, or `SSH_AUTH_SOCK` unset). Note that tools which snapshot an
+interactive shell (Codex) use whatever `SSH_AUTH_SOCK` the shell rc
+exports, so a stale snapshot can point at an empty agent. Check with
+`ssh-add -l`, load the key the host accepts, and retry with
+`sase-listen publish --pending`.
+
 ## sase-listen on the host is too old to receive episodes
 
 The host does not have `feed receive` yet. Upgrade it first:
