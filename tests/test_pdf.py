@@ -481,6 +481,78 @@ def test_render_pdf_url_tone_reading(
     assert manifest["source"]["url"] == "https://arxiv.org/pdf/2608.25174"
 
 
+def test_store_arxiv_abs_url_fetches_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sase_listen.paths import sources_dir
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    fetched: list[str] = []
+
+    def _recording_fetch(url: str, **kwargs: Any) -> FetchedPage:
+        fetched.append(url)
+        return _stub_pdf_fetch(url, **kwargs)
+
+    monkeypatch.setattr(store_module, "fetch_page", _recording_fetch)
+    steps: list[str] = []
+    first = acquire(
+        "https://arxiv.org/abs/2608.25174?context=cs.SE", on_step=steps.append
+    )
+    assert fetched == ["https://arxiv.org/pdf/2608.25174"]
+    assert first.source_format == "pdf"
+    assert first.metadata["url"] == "https://arxiv.org/pdf/2608.25174"
+    assert "fetching the arXiv PDF for 2608.25174" in steps
+    second = acquire("https://arxiv.org/pdf/2608.25174")
+    third = acquire("https://www.arxiv.org/abs/2608.25174")
+    assert second.reused is True
+    assert third.reused is True
+    assert second.directory == first.directory
+    assert third.directory == first.directory
+    assert fetched == ["https://arxiv.org/pdf/2608.25174"]
+    index = json.loads((sources_dir() / "index.json").read_text(encoding="utf-8"))
+    assert not any("/abs/" in key for key in index)
+
+
+def test_store_arxiv_abs_with_html_file_keeps_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
+    def _no_fetch(url: str, **kwargs: Any) -> FetchedPage:
+        raise AssertionError("fetch_page must not be called with --html FILE")
+
+    monkeypatch.setattr(store_module, "fetch_page", _no_fetch)
+    saved = tmp_path / "saved.pdf"
+    saved.write_bytes(_paper_pdf())
+    acquired = acquire("https://arxiv.org/abs/2608.25174", html_file=saved)
+    assert acquired.metadata["url"] == "https://arxiv.org/abs/2608.25174"
+
+
+def test_pipeline_arxiv_abs_url_matches_pdf_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(store_module, "fetch_page", _stub_pdf_fetch)
+    loaded = load_source("https://arxiv.org/abs/2608.25174", edition="verbatim")
+    assert loaded.source_key == "url:https://arxiv.org/pdf/2608.25174#verbatim"
+    assert loaded.source_url == "https://arxiv.org/pdf/2608.25174"
+
+
+@pytest.mark.live
+def test_live_arxiv_pdf_url_resolves_to_pdf() -> None:
+    import os
+
+    if os.environ.get("SASE_LISTEN_LIVE") != "1":
+        pytest.skip("set SASE_LISTEN_LIVE=1 to fetch the real arXiv paper")
+    from sase_listen.web.arxiv import arxiv_pdf_url
+    from sase_listen.web.fetch import fetch_page as live_fetch
+
+    resolved = arxiv_pdf_url("https://arxiv.org/abs/2608.25174")
+    assert resolved == "https://arxiv.org/pdf/2608.25174"
+    page = live_fetch(resolved or "")
+    assert page.content_type == "application/pdf"
+
+
 @pytest.mark.live
 def test_live_arxiv_pdf_extraction() -> None:
     import os

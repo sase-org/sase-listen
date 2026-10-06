@@ -97,7 +97,7 @@ def add_parser(
     p.set_defaults(func=run)
     p.epilog = (
         "Example: sase-listen render https://example.com/article -e full\n"
-        "Example: sase-listen render https://arxiv.org/pdf/2608.25174 -e full"
+        "Example: sase-listen render https://arxiv.org/abs/2608.25174 -e full"
     )
     return p
 

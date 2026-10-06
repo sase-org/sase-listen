@@ -14,6 +14,7 @@ from typing import Any
 
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.paths import sources_dir
+from sase_listen.web.arxiv import arxiv_paper_id, arxiv_pdf_url
 from sase_listen.web.extract import Article, extract_article, normalize_url
 from sase_listen.web.fetch import (
     MAX_PDF_BYTES,
@@ -209,6 +210,11 @@ def acquire(
     on_step: Callable[[str], None] | None = None,
 ) -> AcquiredSource:
     """Fetch/extract a URL once, retaining bytes, text and diagnostics locally."""
+    paper_id = arxiv_paper_id(url) if html_file is None else None
+    if paper_id is not None:
+        resolved = arxiv_pdf_url(url)
+        if resolved is not None:
+            url = resolved
     requested_key = normalize_url(url)
     root = sources_dir()
     root.mkdir(parents=True, exist_ok=True)
@@ -222,6 +228,8 @@ def acquire(
         if html_file is not None:
             name = Path(str(html_file)).name or "saved page"
             on_step(f"reading saved page from {name}")
+        elif paper_id is not None:
+            on_step(f"fetching the arXiv PDF for {paper_id}")
         else:
             host = requested_key.split("://", 1)[-1].split("/", 1)[0]
             on_step(f"fetching {host}")

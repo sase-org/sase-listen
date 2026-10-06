@@ -61,7 +61,9 @@ through audited `sase artifact read`), or an http(s) article or PDF URL. URL
 and PDF rendering defaults to the AI-written `brief` edition; choose `full`
 for an adaptation or `verbatim` for a deterministic article-text reading.
 `--html FILE` uses a saved browser page (HTML or PDF), and `--refresh`
-fetches or extracts the source again and replaces the cached copy.
+fetches or extracts the source again and replaces the cached copy. arXiv
+paper URLs (for example `/abs/…`) are fetched as the paper's PDF; see
+[Web articles](web-articles.md).
 `--dry-run` writes the article script if needed, prints the chunk plan, and
 stops.
 `--publish` / `--no-publish` override the `feed.auto_publish` config.

@@ -84,8 +84,10 @@ extracts PDF documents to the same article shape using pdfminer.six (bookmark
 or font-size headings, header/footer and small-text filtering, arXiv
 metadata). `store.py` atomically retains the original (HTML or PDF), repaired
 Markdown, metadata, source index, and cached verbatim script under the XDG data
-directory. The pipeline gives URL sources a canonical URL and
-edition identity, so rendering the stored script keeps the same episode id.
+directory. `arxiv.py` resolves arXiv paper URLs to their canonical PDF URL
+before `store.py` keys and fetches them. The pipeline gives URL sources a
+canonical URL and edition identity, so rendering the stored script keeps the
+same episode id.
 
 ## Podcast feed (`src/sase_listen/feed.py`, `feedhost.py`)
 

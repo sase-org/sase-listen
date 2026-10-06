@@ -64,7 +64,7 @@ A URL is treated as a PDF when its content type is `application/pdf` (or
 `%PDF` bytes:
 
 ```bash
-sase-listen render https://arxiv.org/pdf/2608.25174 -e full
+sase-listen render https://arxiv.org/abs/2608.25174 -e full
 ```
 
 Local `.pdf` files are valid sources too, cached by content hash so re-renders
@@ -93,3 +93,14 @@ rejected with "The extracted PDF text is too short". Editions and caching match
 articles, and `script … --json` reports the stored `source_dir`, word count,
 and outline diagnostics (`found`, `restored`, `missing`, plus the outline
 `source`: `bookmarks`, `fonts`, or `none`).
+
+### arXiv papers
+
+arXiv paper URLs are recognized on `arxiv.org`, `www.arxiv.org`, or
+`export.arxiv.org`: `/abs/<id>`, `/html/<id>`, and `/pdf/<id>` (with or
+without a `.pdf` suffix). Old- and new-style IDs are accepted, any query or
+fragment is ignored, and the version suffix (for example `v2`) is kept. Each
+is fetched as `https://arxiv.org/pdf/<id>`, so all forms for one paper share
+one cached source, writer script, and episode. `--html FILE` keeps the URL as
+given. A failed PDF fetch is reported and does not fall back to the abstract
+page.
