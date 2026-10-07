@@ -89,7 +89,9 @@ non-`##` headings, and preamble text. Residue errors cover list markers,
 tables, fences, backticks, link syntax, HTML, and emphasis. Warnings cover
 URLs, paths, `file:line`, SHAs, refs, `§`, symbols (`→ ≈ × ≥ ≤ ±`), long
 chapters/paragraphs/sentences, and edition budgets. `--source` adds number
-fidelity: every number in the script must appear in the source.
+fidelity: every number in the script must appear in the source. A source
+number may appear as digits or spelled out in words: "thirteen" matches `13`,
+and "fifty percent" matches `50%`.
 
 `lint` exits 1 on errors, or on warnings with `--strict`. `render` refuses
 structural errors, and cleans residue with warnings.

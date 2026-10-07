@@ -295,6 +295,19 @@ def _stage_values(stages: list[Stage]) -> list[str]:
     return [stage.value for stage in stages]
 
 
+def _summarize_acquired_source(
+    metadata: dict[str, Any], source_url: str, source_label: str
+) -> str:
+    """Compose the SOURCE summary from acquisition metadata alone."""
+    words = int(metadata.get("words", 0) or 0)
+    if source_url:
+        host = source_url.split("://", 1)[-1].split("/", 1)[0]
+        cached = " · cached" if metadata.get("reused") else ""
+        return f"{host} · {format_words(words)}{cached}"
+    name = Path(source_label).name or source_label
+    return f"{name} · {format_words(words)}"
+
+
 def summarize_source(loaded: LoadedSource, *, normalized: bool = False) -> str:
     """Compose the SOURCE stage summary from loaded provenance."""
     meta = loaded.source_meta
@@ -645,6 +658,10 @@ def _load_acquired(
 
         cfg = config if config is not None else load_config()[0]
         if events is not None:
+            events.on_stage_done(
+                Stage.SOURCE.value,
+                _summarize_acquired_source(metadata, source_url, source_label),
+            )
             events.on_stage(Stage.WRITE.value)
         authored = (
             None if refresh else load_cached_script(acquired, selected_edition, cfg)
@@ -712,7 +729,7 @@ def _load_acquired(
         source_meta=dict(metadata),
         writer=writer_summary,
     )
-    if events is not None:
+    if events is not None and selected_edition not in {"brief", "full"}:
         events.on_stage_done(Stage.SOURCE.value, summarize_source(loaded))
     return loaded
 

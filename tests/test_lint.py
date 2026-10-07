@@ -120,6 +120,48 @@ def test_number_fidelity() -> None:
     assert rules.get("W013") == "warning"
 
 
+def _number_script(number: str) -> str:
+    return (
+        f"---\nnarration: 1\ntitle: T\n---\n\n## C\n\nThe result was {number} items.\n"
+    )
+
+
+def test_number_fidelity_spelled_out_source() -> None:
+    assert lint_text(_number_script("13"), "They got thirteen.") == []
+    assert lint_text(_number_script("25"), "It was twenty-five.") == []
+    assert lint_text(_number_script("25"), "It was twenty five.") == []
+    assert lint_text(_number_script("10000"), "It was Ten thousand.") == []
+    assert lint_text(_number_script("10,000"), "It was Ten thousand.") == []
+    assert lint_text(_number_script("112"), "It was one hundred and twelve.") == []
+    assert lint_text(_number_script("13"), "It was the thirteenth.") == []
+    assert lint_text(_number_script("1000000"), "It was a million.") == []
+    assert lint_text(_number_script("2700000"), "It was 2.7 million.") == []
+    assert lint_text(_number_script("50%"), "It was fifty percent.") == []
+
+
+def test_number_fidelity_spelled_out_negative() -> None:
+    assert _rules(_number_script("14"), "They got thirteen.").get("W013") == ("warning")
+    assert _rules(_number_script("12"), "It was a dozen.").get("W013") == ("warning")
+
+
+def test_source_number_forms() -> None:
+    from sase_listen.script.numwords import source_number_forms
+
+    assert "13" in source_number_forms("They got thirteen.")
+    assert "25" in source_number_forms("twenty-five")
+    assert "10000" in source_number_forms("Ten thousand")
+    assert "112" in source_number_forms("one hundred and twelve")
+    assert "13" in source_number_forms("thirteenth")
+    assert "21" in source_number_forms("twenty-first")
+    assert "100" in source_number_forms("hundredth")
+    assert "1000000" in source_number_forms("a million")
+    assert "2700000" in source_number_forms("2.7 million")
+    assert "50%" in source_number_forms("fifty percent")
+    assert "42%" in source_number_forms("42 percent")
+    assert "14" not in source_number_forms("thirteen")
+    assert "12" not in source_number_forms("a dozen")
+
+
 def test_findings_carry_line_col_and_hint() -> None:
     findings = lint_text("## C\n\nBody.\n")
     assert findings

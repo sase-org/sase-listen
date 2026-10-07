@@ -50,7 +50,9 @@ sase-listen render article_narration.md
 
 The writer uses Gemini and the existing Gemini engine credentials. Generated
 scripts and writer metadata are cached beside the stored source; a matching
-source, model, edition, and prompt version reuses the script. Pass `--refresh`
+source, model, edition, and prompt version reuses the script. A cached script
+saved with lint findings is re-checked on the next run and reused once it
+lints clean, whether from rule fixes or hand edits. Pass `--refresh`
 to fetch and write again. Script writing uses Gemini API tokens and incurs model
 usage charges. `render --dry-run` writes the script and reports the later audio
 synthesis estimate.

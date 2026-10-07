@@ -115,6 +115,24 @@ def _repair_findings(
     ]
 
 
+def _required_findings_for_script(
+    script: str,
+    *,
+    source_text: str,
+    source_words: int,
+    edition: str,
+) -> tuple[list[Finding], list[Finding]]:
+    """Lint a script and return (final_findings, required_findings)."""
+    final_findings = lint_text(script, source_text=source_text)
+    budget = 600 if edition == "brief" else 2400
+    if edition == "brief":
+        repair_under_budget = source_words >= 300
+    else:
+        repair_under_budget = math.ceil(source_words * 0.9) >= math.ceil(budget * 0.5)
+    required = _repair_findings(final_findings, repair_under_budget=repair_under_budget)
+    return final_findings, required
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".tmp-{os.getpid()}-{path.name}")
@@ -136,6 +154,7 @@ def _load_cached(
     source_sha256: str,
     model: str,
     edition: str,
+    article: AcquiredSource | None = None,
 ) -> AuthoredScript | None:
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -149,8 +168,36 @@ def _load_cached(
         ):
             return None
         if metadata.get("required_findings"):
-            return None
-        script = script_path.read_text(encoding="utf-8")
+            if article is None:
+                return None
+            try:
+                cached_text = script_path.read_text(encoding="utf-8")
+                source_text = article.markdown_path.read_text(encoding="utf-8")
+            except OSError:
+                return None
+            source_words = int(article.metadata.get("words", 0) or 0)
+            final, required = _required_findings_for_script(
+                cached_text,
+                source_text=source_text,
+                source_words=source_words,
+                edition=edition,
+            )
+            if required:
+                return None
+            try:
+                metadata["final_findings"] = [finding.to_dict() for finding in final]
+                metadata["required_findings"] = []
+                _atomic_write(
+                    metadata_path,
+                    (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode(
+                        "utf-8"
+                    ),
+                )
+            except OSError:
+                pass
+            script = cached_text
+        else:
+            script = script_path.read_text(encoding="utf-8")
         summary = {
             key: metadata.get(key)
             for key in ("model", "model_version", "prompt_version", "attempts")
@@ -179,6 +226,7 @@ def load_cached_script(
         source_sha256=str(article.metadata.get("source_sha256", "")),
         model=cfg.writer.model,
         edition=edition,
+        article=article,
     )
 
 
@@ -277,16 +325,12 @@ def author_script(
         body = _strip_body(reply.text)
         script = _frontmatter(article, edition, body)
         source_text = article.markdown_path.read_text(encoding="utf-8")
-        final_findings = lint_text(script, source_text=source_text)
         source_words = int(article.metadata.get("words", 0) or 0)
-        budget = 600 if edition == "brief" else 2400
-        repair_under_budget = (
-            source_words >= 300
-            if edition == "brief"
-            else math.ceil(source_words * 0.9) >= math.ceil(budget * 0.5)
-        )
-        required_findings = _repair_findings(
-            final_findings, repair_under_budget=repair_under_budget
+        final_findings, required_findings = _required_findings_for_script(
+            script,
+            source_text=source_text,
+            source_words=source_words,
+            edition=edition,
         )
         if not required_findings:
             break
@@ -321,6 +365,9 @@ def author_script(
             "Generated article script still has required lint findings after "
             f"{attempts} attempt(s).",
             ExitCode.SCRIPT_STRUCTURAL,
-            hint=f"Edit the saved script, then run `sase-listen render {script_path}`.",
+            hint=(
+                "Edit the saved script and rerun the same command, or run "
+                f"`sase-listen render {script_path}`."
+            ),
         )
     return AuthoredScript(script, script_path, summary)

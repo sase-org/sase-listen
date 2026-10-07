@@ -94,6 +94,8 @@ sase-listen lint episode_narration.md [--source report.md] [--strict] [--json]
 
 Exits 1 on errors, or on warnings with `--strict`. `--source` adds the
 number-fidelity check: every number in the script must appear in the source.
+A source number may appear as digits or spelled out in words: "thirteen"
+matches `13`, and "fifty percent" matches `50%`.
 
 ## `guide` — print the authoring rules
 

@@ -133,6 +133,115 @@ def test_exhausted_lint_repairs_save_script_and_fail(tmp_path: Path) -> None:
     assert "17" in saved.read_text(encoding="utf-8")
 
 
+def _article_with_source(
+    tmp_path: Path, source_text: str, *, words: int = 200
+) -> AcquiredSource:
+    directory = tmp_path / "article"
+    directory.mkdir(exist_ok=True)
+    markdown_path = directory / "source.md"
+    markdown_path.write_text(source_text, encoding="utf-8")
+    return AcquiredSource(
+        directory=directory,
+        page_path=directory / "page.html",
+        markdown_path=markdown_path,
+        metadata={
+            "canonical_url": "https://example.test/article",
+            "title": "Article Test",
+            "author": "Ada Lovelace",
+            "site": "Example",
+            "date": "2026-02-11",
+            "source_sha256": "source-sha",
+            "words": words,
+            "outline": {"restored": ["The claim", "The results"]},
+        },
+    )
+
+
+def test_spelled_out_source_number_succeeds_in_one_attempt(
+    tmp_path: Path,
+) -> None:
+    article = _article_with_source(
+        tmp_path,
+        "# Article Test\n\nWhen they sketched three teams they got thirteen.",
+    )
+    result = author_script(
+        article,
+        "brief",
+        default_config(),
+        _Writer("## The evidence\n\nThey got 13 agents."),
+    )
+    assert result.writer["attempts"] == 1
+    assert "13" in result.text
+
+
+def test_edit_and_rerun_reuses_cleaned_script(tmp_path: Path) -> None:
+    article = _article(tmp_path)
+    cfg = default_config()
+    cfg.writer.max_attempts = 1
+    try:
+        author_script(
+            article,
+            "brief",
+            cfg,
+            _Writer("## The evidence\n\nThe team reported 17 decisions."),
+        )
+    except SaseListenError:
+        pass
+    else:
+        raise AssertionError("expected exhausted attempts to fail")
+    saved = article.directory / "brief_narration.md"
+    text = saved.read_text(encoding="utf-8")
+    assert "17" in text
+    saved.write_text(text.replace("17 decisions", "decisions"), encoding="utf-8")
+
+    class _RaisingWriter:
+        def write(self, system: str, user: str) -> WriterReply:
+            raise AssertionError("expected the edited script to be reused")
+
+    reused = author_script(article, "brief", cfg, _RaisingWriter())  # type: ignore[arg-type]
+    assert "17" not in reused.text
+    record = json.loads((article.directory / "brief_writer.json").read_text())
+    assert record["required_findings"] == []
+    assert all(f["rule"] != "W013" for f in record["final_findings"])
+
+
+def test_cached_findings_still_apply_regenerates(tmp_path: Path) -> None:
+    article = _article(tmp_path)
+    cfg = default_config()
+    cfg.writer.max_attempts = 1
+    try:
+        author_script(
+            article,
+            "brief",
+            cfg,
+            _Writer("## The evidence\n\nThe team reported 17 decisions."),
+        )
+    except SaseListenError:
+        pass
+    else:
+        raise AssertionError("expected exhausted attempts to fail")
+    writer = _Writer("## The evidence\n\nThe team described the decisions.")
+    result = author_script(article, "brief", cfg, writer)
+    assert "described the decisions" in result.text
+    assert writer.users
+
+
+def test_exhausted_hint_names_both_recovery_paths(tmp_path: Path) -> None:
+    article = _article(tmp_path)
+    cfg = default_config()
+    cfg.writer.max_attempts = 1
+    with pytest.raises(SaseListenError) as error:
+        author_script(
+            article,
+            "brief",
+            cfg,
+            _Writer("## The evidence\n\nThe team reported 17 decisions."),
+        )
+    hint = str(error.value.hint or "")
+    assert "rerun the same command" in hint
+    assert "sase-listen render" in hint
+
+
 def test_cache_invalidates_on_prompt_version_and_refresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

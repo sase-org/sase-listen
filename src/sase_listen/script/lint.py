@@ -15,6 +15,7 @@ from sase_listen.script.model import (
     VALID_KINDS,
     VALID_PRODUCERS,
 )
+from sase_listen.script.numwords import source_number_forms
 
 Severity = Literal["error", "warning"]
 
@@ -575,6 +576,7 @@ def lint_text(raw_text: str, source_text: str | None = None) -> list[Finding]:
     # Number fidelity against the source report.
     if source_text is not None:
         normalized_source = source_text.replace(",", "").replace("_", "")
+        source_forms = source_number_forms(source_text)
         for offset, line in enumerate(body_lines):
             lineno = body_start + offset
             if _FENCE_RE.match(line) or not line.strip():
@@ -586,7 +588,7 @@ def lint_text(raw_text: str, source_text: str | None = None) -> list[Finding]:
                     continue
                 # Skip heading markers already excluded; check membership.
                 norm = _normalize_number(cand)
-                if norm and norm not in normalized_source:
+                if norm and norm not in normalized_source and norm not in source_forms:
                     findings.append(
                         Finding(
                             "W013",

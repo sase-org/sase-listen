@@ -278,6 +278,161 @@ def test_url_brief_write_steps_and_cached_rerun(
     assert not any("attempt 1 of" in step for step in rerun_steps)
 
 
+def _brief_fixture_html(tmp_path: Path) -> Path:
+    prose = (
+        "A detailed synthetic paragraph explains the engineering choices and "
+        "their effects for readers who need to understand the complete example. "
+        "It includes enough meaningful words to pass the article length check. "
+    )
+    html = (
+        "<!doctype html><html><head><title>Cached Story</title></head>"
+        "<body><article><h1>Cached Story</h1>"
+        f"<h2>First Section</h2><p>{prose * 4}</p>"
+        f"<h2>Second Section</h2><p>{prose * 4}</p>"
+        f"<h3>Third Section</h3><p>{prose * 4}</p>"
+        "</article></body></html>"
+    ).encode()
+    saved = tmp_path / "browser.html"
+    saved.write_bytes(html)
+    return saved
+
+
+def test_url_brief_source_done_before_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(base / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(base / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(base / "state"))
+    monkeypatch.setenv("SASE_LISTEN_CONFIG", str(base / "missing-config.yml"))
+    from sase_listen.writer.base import WriterReply
+
+    saved = _brief_fixture_html(tmp_path)
+
+    class FakeWriter:
+        def write(self, system: str, user: str) -> WriterReply:
+            paragraph = (
+                "The team carefully describes the engineering process and results. "
+            )
+            return WriterReply(
+                "## The question\n\n"
+                + paragraph * 25
+                + "\n\n## The evidence\n\n"
+                + paragraph * 25,
+                "stub-brief-v1",
+                50,
+                75,
+            )
+
+    import sase_listen.writer
+
+    monkeypatch.setattr(
+        sase_listen.writer, "create_writer", lambda cfg, **kwargs: FakeWriter()
+    )
+    cfg = default_config()
+    cfg.narrator = "tone"
+    url = "https://example.test/cached-story"
+    events = RecordingEvents()
+    load_source(url, edition="brief", html_file=str(saved), config=cfg, events=events)
+    kinds = [(name, args[0] if args else "") for name, args in events.calls]
+    done_source = next(
+        index
+        for index, (name, stage) in enumerate(kinds)
+        if name == "on_stage_done" and stage == "source"
+    )
+    start_write = next(
+        index
+        for index, (name, stage) in enumerate(kinds)
+        if name == "on_stage" and stage == "write"
+    )
+    assert done_source < start_write
+
+
+def test_url_brief_write_failure_source_already_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(base / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(base / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(base / "state"))
+    monkeypatch.setenv("SASE_LISTEN_CONFIG", str(base / "missing-config.yml"))
+    from sase_listen.errors import SaseListenError
+    from sase_listen.writer.base import WriterReply
+
+    saved = _brief_fixture_html(tmp_path)
+
+    class FailingWriter:
+        def write(self, system: str, user: str) -> WriterReply:
+            return WriterReply(
+                "## The question\n\nThe team reported 17 decisions.",
+                "stub-brief-v1",
+                50,
+                75,
+            )
+
+    import sase_listen.writer
+
+    monkeypatch.setattr(
+        sase_listen.writer, "create_writer", lambda cfg, **kwargs: FailingWriter()
+    )
+    cfg = default_config()
+    cfg.narrator = "tone"
+    cfg.writer.max_attempts = 1
+    url = "https://example.test/failing-story"
+    events = RecordingEvents()
+    try:
+        load_source(
+            url, edition="brief", html_file=str(saved), config=cfg, events=events
+        )
+    except SaseListenError:
+        pass
+    else:
+        raise AssertionError("expected the writer failure to propagate")
+    kinds = [(name, args[0] if args else "") for name, args in events.calls]
+    done_source = next(
+        index
+        for index, (name, stage) in enumerate(kinds)
+        if name == "on_stage_done" and stage == "source"
+    )
+    start_write = next(
+        index
+        for index, (name, stage) in enumerate(kinds)
+        if name == "on_stage" and stage == "write"
+    )
+    assert done_source < start_write
+
+    from sase_listen.cli.progress import (
+        STATUS_DONE,
+        STATUS_FAILED,
+        ProgressState,
+    )
+
+    state = ProgressState(url)
+    state.on_stages(["source", "write"])
+    monkeypatch.setattr(
+        sase_listen.writer, "create_writer", lambda cfg, **kwargs: FailingWriter()
+    )
+    failing_url = "https://example.test/failing-progress"
+    try:
+        load_source(
+            failing_url,
+            edition="brief",
+            html_file=str(saved),
+            config=cfg,
+            events=state,
+        )
+    except SaseListenError as exc:
+        state.mark_active(STATUS_FAILED, str(exc))
+    else:
+        raise AssertionError("expected the writer failure to propagate")
+    snapshot = state.snapshot(0.0)
+    by_id = {row.id: row.status for row in snapshot.rows}
+    assert by_id.get("source") == STATUS_DONE
+    assert by_id.get("write") == STATUS_FAILED
+
+
 def test_cli_render_interrupt_returns_130_and_keeps_cache(
     isolated: Path,
     tmp_path: Path,
