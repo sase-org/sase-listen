@@ -712,7 +712,6 @@ def test_human_output_paths(isolated: Path, tmp_path: Path, capsys) -> None:
 
 
 def test_bad_config_file(isolated: Path, tmp_path: Path, monkeypatch, capsys) -> None:
-    import sase_listen.cli.render as render_cmd
     import sase_listen.pipeline as pipeline_mod
 
     bad_cfg = tmp_path / "bad-config.yml"
@@ -727,7 +726,6 @@ def test_bad_config_file(isolated: Path, tmp_path: Path, monkeypatch, capsys) ->
         raise RuntimeError("boom")
 
     monkeypatch.setattr(pipeline_mod, "render", _boom)
-    monkeypatch.setattr(render_cmd, "render", _boom)
     assert main(["render", source, "-n", "tone", "--json"]) == 1
     assert json.loads(capsys.readouterr().out)["error"]["code"] == 1
     assert main(["render", source, "-n", "tone"]) == 1

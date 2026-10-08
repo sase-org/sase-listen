@@ -108,7 +108,7 @@ def test_render_generated_cover_reaches_request(
 ) -> None:
     from pathlib import Path
 
-    import sase_listen.cli.render as render_mod
+    import sase_listen.pipeline as pipeline_mod
 
     script = (
         "---\nnarration: 1\ntitle: Tiny Episode\nkind: document\n"
@@ -126,14 +126,14 @@ def test_render_generated_cover_reaches_request(
     monkeypatch.setenv("SASE_LISTEN_CONFIG", str(base / "missing-config.yml"))
 
     captured: dict[str, object] = {}
-    original = render_mod.render
+    original = pipeline_mod.render
 
     def _capture(request, **kwargs):  # type: ignore[no-untyped-def]
         captured["generated_cover"] = request.generated_cover
         captured["cover"] = request.cover
         return original(request, **kwargs)
 
-    monkeypatch.setattr(render_mod, "render", _capture)
+    monkeypatch.setattr(pipeline_mod, "render", _capture)
     assert (
         main(["render", str(source), "-n", "tone", "--generated-cover", "--dry-run"])
         == 0

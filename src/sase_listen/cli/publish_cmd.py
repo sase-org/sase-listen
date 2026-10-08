@@ -5,27 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from typing import TYPE_CHECKING
 
 from sase_listen import invocation
-from sase_listen.cli.progress import activity
-from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
-from sase_listen.feed import (
-    STALE_DOWNLOAD_HINT,
-    replacement_notice,
-    resolve_episode_ref,
-    unpublish_episode,
-)
-from sase_listen.feedhost import (
-    PENDING_HINT,
-    feed_role,
-    flush_pending,
-    pending_hint,
-    publish_any,
-    queue_publish,
-    refuse_if_misrouted,
-    run_remote,
-)
+
+if TYPE_CHECKING:
+    from sase_listen.config import SaseListenConfig
 
 
 def add_parser(
@@ -75,6 +61,8 @@ def _print_error(exc: SaseListenError, *, as_json: bool, prefix: str) -> int:
 
 
 def _load_cfg(args: argparse.Namespace) -> SaseListenConfig | None:
+    from sase_listen.config import load_config
+
     try:
         cfg, _ = load_config()
     except ValueError as exc:
@@ -93,6 +81,8 @@ def _load_cfg(args: argparse.Namespace) -> SaseListenConfig | None:
 def _queue_remote_failure(
     cfg: SaseListenConfig, episode_id: str, exc: SaseListenError
 ) -> None:
+    from sase_listen.feedhost import PENDING_HINT, pending_hint, queue_publish
+
     queue_publish(episode_id, str(exc))
     hint = pending_hint()
     if PENDING_HINT not in exc.hint and hint not in exc.hint:
@@ -101,6 +91,20 @@ def _queue_remote_failure(
 
 def run_publish(args: argparse.Namespace) -> int:
     """Publish an episode to the private feed, or flush the outbox."""
+    from sase_listen.cli.progress import activity
+    from sase_listen.feed import (
+        STALE_DOWNLOAD_HINT,
+        replacement_notice,
+        resolve_episode_ref,
+    )
+    from sase_listen.feedhost import (
+        feed_role,
+        flush_pending,
+        pending_hint,
+        publish_any,
+        refuse_if_misrouted,
+    )
+
     cfg = _load_cfg(args)
     if cfg is None:
         return int(ExitCode.CONFIG)
@@ -180,6 +184,10 @@ def run_publish(args: argparse.Namespace) -> int:
 
 def run_unpublish(args: argparse.Namespace) -> int:
     """Remove an episode from the private feed."""
+    from sase_listen.cli.progress import activity
+    from sase_listen.feed import unpublish_episode
+    from sase_listen.feedhost import feed_role, refuse_if_misrouted, run_remote
+
     cfg = _load_cfg(args)
     if cfg is None:
         return int(ExitCode.CONFIG)

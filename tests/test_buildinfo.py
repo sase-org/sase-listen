@@ -356,17 +356,15 @@ def _fake_build(
 def test_doctor_same_build_passes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    import sase_listen.cli.doctor as doctor_mod
     from sase_listen.cli.app import main
 
     _doctor_config(tmp_path, monkeypatch, host="apollo")
     monkeypatch.setattr("sase_listen.feedhost.local_hostname", lambda: "athena")
     local = _fake_build("0.1.1", "abc1234")
     remote = dict(local.to_json())
-    monkeypatch.setattr(doctor_mod, "_current_build", lambda: local)
+    monkeypatch.setattr("sase_listen.buildinfo.current", lambda: local)
     monkeypatch.setattr(
-        doctor_mod,
-        "run_remote",
+        "sase_listen.feedhost.run_remote",
         lambda cfg, args, **kw: (
             {
                 "configured": True,
@@ -389,21 +387,19 @@ def test_doctor_same_build_passes(
 def test_doctor_skew_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    import sase_listen.cli.doctor as doctor_mod
     from sase_listen.cli.app import main
 
     _doctor_config(tmp_path, monkeypatch, host="apollo")
     monkeypatch.setattr("sase_listen.feedhost.local_hostname", lambda: "athena")
     local = _fake_build("0.1.1", "abc1234")
-    monkeypatch.setattr(doctor_mod, "_current_build", lambda: local)
+    monkeypatch.setattr("sase_listen.buildinfo.current", lambda: local)
 
     # Differing commits fail.
     other = dict(_fake_build("0.1.1", "def5678").to_json())
 
     def _check(remote: Any, proto: int = 1) -> dict[str, Any]:
         monkeypatch.setattr(
-            doctor_mod,
-            "run_remote",
+            "sase_listen.feedhost.run_remote",
             lambda cfg, args, **kw: (
                 {
                     "configured": True,
@@ -443,12 +439,11 @@ def test_doctor_skew_fails(
 def test_doctor_local_stale_install_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    import sase_listen.cli.doctor as doctor_mod
     from sase_listen.cli.app import main
 
     _doctor_config(tmp_path, monkeypatch, host="")
     stale = _fake_build("0.1.1", "abc1234", stale=True)
-    monkeypatch.setattr(doctor_mod, "_current_build", lambda: stale)
+    monkeypatch.setattr("sase_listen.buildinfo.current", lambda: stale)
     assert main(["doctor", "--json"]) == 3
     payload = json.loads(capsys.readouterr().out)
     names = {c["name"]: c for c in payload["checks"]}

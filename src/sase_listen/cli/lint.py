@@ -6,13 +6,13 @@ import argparse
 import json
 import sys
 from pathlib import Path
-
-from rich.console import Console
-from rich.table import Table
+from typing import TYPE_CHECKING
 
 from sase_listen import invocation
 from sase_listen.errors import ExitCode
-from sase_listen.script import Finding, lint_file
+
+if TYPE_CHECKING:
+    from sase_listen.script import Finding
 
 
 def add_parser(
@@ -42,6 +42,11 @@ def _failed(findings: list[Finding], strict: bool) -> bool:
 
 def run(args: argparse.Namespace) -> int:
     """Validate a script against the contract and listenability rules."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from sase_listen.script import lint_file
+
     prefix = invocation.command("lint")
     script_path = Path(args.script)
     if not script_path.exists():

@@ -6,28 +6,14 @@ import argparse
 import json
 import sys
 from pathlib import Path
-
-from rich.console import Console
-from rich.table import Table
+from typing import TYPE_CHECKING
 
 from sase_listen import invocation
-from sase_listen.cli.progress import (
-    LiveProgress,
-    build_progress,
-    interrupt_guard,
-    resolve_mode,
-)
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.events import RenderEvents
-from sase_listen.normalize import normalize_markdown
-from sase_listen.pipeline import (
-    LoadedSource,
-    load_source,
-    looks_like_pdf_file,
-    looks_like_url,
-    source_stages,
-)
-from sase_listen.script import parse_script_text
+
+if TYPE_CHECKING:
+    from sase_listen.pipeline import LoadedSource
 
 
 class _Interrupted(Exception):
@@ -86,6 +72,8 @@ def _fetch_source(
     args: argparse.Namespace, events: RenderEvents | None
 ) -> LoadedSource:
     """Fetch the URL source, announcing the expected source stages first."""
+    from sase_listen.pipeline import load_source, source_stages
+
     if events is not None:
         events.on_stages(
             [stage.value for stage in source_stages(str(args.source), args.edition)]
@@ -101,6 +89,15 @@ def _fetch_source(
 
 def _load_url_source(args: argparse.Namespace) -> LoadedSource:
     """Load a URL source under the requested progress display."""
+    from rich.console import Console
+
+    from sase_listen.cli.progress import (
+        LiveProgress,
+        build_progress,
+        interrupt_guard,
+        resolve_mode,
+    )
+
     as_json = bool(args.json)
     probe = Console(stderr=True, highlight=False, emoji=False, markup=False)
     mode = resolve_mode(
@@ -148,6 +145,13 @@ def _load_url_source(args: argparse.Namespace) -> LoadedSource:
 
 def run(args: argparse.Namespace) -> int:
     """Normalize Markdown into an edition: verbatim narration script."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from sase_listen.normalize import normalize_markdown
+    from sase_listen.pipeline import looks_like_pdf_file, looks_like_url
+    from sase_listen.script import parse_script_text
+
     if looks_like_url(args.source) or looks_like_pdf_file(args.source):
         try:
             loaded = _load_url_source(args)

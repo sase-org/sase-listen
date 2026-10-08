@@ -5,26 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from typing import TYPE_CHECKING
 
 from sase_listen import invocation
-from sase_listen.cli.progress import activity
-from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
-from sase_listen.feed import (
-    feed_status,
-    init_feed,
-    masked_subscribe_url,
-    print_qr,
-    rebuild_feed,
-)
-from sase_listen.feedhost import (
-    MAX_RECEIVE_BYTES,
-    feed_role,
-    pending_publishes,
-    receive_episode,
-    refuse_if_misrouted,
-    run_remote,
-)
+
+if TYPE_CHECKING:
+    from sase_listen.config import SaseListenConfig
 
 
 def add_parser(
@@ -82,6 +69,8 @@ def _print_error(exc: SaseListenError, *, as_json: bool, prefix: str) -> int:
 
 
 def _load_cfg(args: argparse.Namespace) -> SaseListenConfig | None:
+    from sase_listen.config import load_config
+
     try:
         cfg, _ = load_config()
     except ValueError as exc:
@@ -94,6 +83,9 @@ def _load_cfg(args: argparse.Namespace) -> SaseListenConfig | None:
 
 
 def _run_init(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
+    from sase_listen.feed import init_feed, print_qr
+    from sase_listen.feedhost import feed_role
+
     as_json = bool(args.json)
     if feed_role(cfg) == "remote":
         host = cfg.feed.host.strip()
@@ -133,6 +125,8 @@ def _annotate_status(
 ) -> None:
     # Host JSON already has via=local; the client must overwrite with the
     # SSH destination actually used (e.g. apollo), not setdefault.
+    from sase_listen.feedhost import pending_publishes
+
     status["via"] = via
     status["outbox_pending"] = len(pending_publishes())
     if "host" not in status:
@@ -168,6 +162,10 @@ def _print_status(status: dict[str, object], *, qr: str) -> None:
 
 
 def _run_status(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
+    from sase_listen.cli.progress import activity
+    from sase_listen.feed import feed_status, masked_subscribe_url, print_qr
+    from sase_listen.feedhost import feed_role, refuse_if_misrouted, run_remote
+
     as_json = bool(args.json)
     show = bool(args.show_url)
     want_qr = bool(args.qr)
@@ -224,6 +222,10 @@ def _run_status(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
 def _run_rebuild(
     args: argparse.Namespace, cfg: SaseListenConfig, *, prune_only: bool
 ) -> int:
+    from sase_listen.cli.progress import activity
+    from sase_listen.feed import rebuild_feed
+    from sase_listen.feedhost import feed_role, refuse_if_misrouted, run_remote
+
     as_json = bool(args.json)
     try:
         refuse_if_misrouted(cfg)
@@ -256,6 +258,13 @@ def _run_rebuild(
 
 
 def _run_receive(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
+    from sase_listen.feedhost import (
+        MAX_RECEIVE_BYTES,
+        feed_role,
+        receive_episode,
+        refuse_if_misrouted,
+    )
+
     as_json = bool(args.json)
     episode_id = str(args.episode_id or "")
     if not episode_id:

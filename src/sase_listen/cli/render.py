@@ -7,34 +7,17 @@ import json
 import sys
 import time
 from collections.abc import Sequence
-
-from rich.console import Console
-from rich.table import Table
-from rich.text import Text
+from typing import TYPE_CHECKING
 
 from sase_listen import invocation
-from sase_listen.cli.progress import (
-    LiveProgress,
-    ProgressState,
-    Snapshot,
-    build_progress,
-    build_view,
-    interrupt_guard,
-    resolve_mode,
-)
-from sase_listen.engines.retry import RetryWait
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.events import RenderEvents, Stage
-from sase_listen.pipeline import (
-    RenderPlan,
-    RenderRequest,
-    RenderResult,
-    error_to_json,
-    plan_to_json,
-    render,
-    result_to_json,
-)
 from sase_listen.ui import GLYPH_AUDIO, approx_cost, format_duration
+
+if TYPE_CHECKING:
+    from sase_listen.cli.progress import ProgressState, Snapshot
+    from sase_listen.engines.retry import RetryWait
+    from sase_listen.pipeline import RenderPlan, RenderResult
 
 
 def add_parser(
@@ -186,6 +169,10 @@ def _stage_label(stage: str, source: str) -> str:
 
 def _print_plan(plan: RenderPlan) -> None:
     """Print the dry-run plan as a Rich layout."""
+    from rich.console import Console
+    from rich.table import Table
+    from rich.text import Text
+
     console = Console(highlight=False, emoji=False, markup=False)
     console.print(f"{GLYPH_AUDIO} {plan.title}", style="bold")
     narrator = plan.narrator
@@ -257,6 +244,10 @@ def _print_final_frame(state: ProgressState, now: float) -> None:
     """Print the finished checklist to stdout (plain/off modes)."""
     from dataclasses import replace
 
+    from rich.console import Console
+
+    from sase_listen.cli.progress import build_view
+
     console = Console(highlight=False, emoji=False, markup=False)
     snapshot = replace(state.snapshot(now), final=True)
     width = console.width or 80
@@ -267,6 +258,9 @@ def _print_result(
     result: RenderResult, *, live: bool, elapsed_s: float, output: str = ""
 ) -> None:
     """Print the finished render summary to stdout."""
+    from rich.console import Console
+    from rich.text import Text
+
     console = Console(highlight=False, emoji=False, markup=False)
     audio_min = result.duration_s / 60
     if audio_min < 1:
@@ -395,6 +389,24 @@ def _cache_line(snapshot: Snapshot, *, kind: str) -> str:
 
 def run(args: argparse.Namespace) -> int:
     """Render a source into an episode (live checklist or one JSON object)."""
+    from rich.console import Console
+
+    from sase_listen.cli.progress import (
+        LiveProgress,
+        ProgressState,
+        build_progress,
+        interrupt_guard,
+        resolve_mode,
+    )
+    from sase_listen.pipeline import (
+        RenderPlan,
+        RenderRequest,
+        error_to_json,
+        plan_to_json,
+        render,
+        result_to_json,
+    )
+
     request = RenderRequest(
         source=args.source,
         output=args.output or "",

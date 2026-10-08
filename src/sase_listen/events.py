@@ -7,14 +7,22 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from sase_listen.engines.retry import RetryWait
     from sase_listen.pipeline import RenderPlan, RenderResult
 
-from sase_listen.engines.retry import RetryWait
-
 __all__ = ["RenderEvents", "RetryWait", "Stage"]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily re-export RetryWait so importing events stays stdlib-only."""
+    if name == "RetryWait":
+        from sase_listen.engines.retry import RetryWait
+
+        return RetryWait
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class Stage(StrEnum):

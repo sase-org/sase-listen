@@ -6,18 +6,13 @@ import argparse
 import json
 import shutil
 import xml.etree.ElementTree as ET
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sase_listen import invocation
-from sase_listen.buildinfo import compare_builds
-from sase_listen.buildinfo import current as _current_build
-from sase_listen.cli.progress import activity
-from sase_listen.config import SaseListenConfig, load_config
-from sase_listen.engines.secrets import describe_api_key_source
 from sase_listen.errors import ExitCode, SaseListenError
-from sase_listen.feed import FEED_XML_NAME, RECEIVE_PROTOCOL, feed_root, resolve_token
-from sase_listen.feedhost import feed_role, pending_publishes, run_remote
-from sase_listen.paths import cache_dir, config_path, data_dir, state_dir
+
+if TYPE_CHECKING:
+    from sase_listen.config import SaseListenConfig
 
 
 def _ffmpeg_info() -> dict[str, Any]:
@@ -56,6 +51,11 @@ def _ffmpeg_info() -> dict[str, Any]:
 def _run_checks(
     *, online: bool, allow_activity: bool = True
 ) -> tuple[list[dict[str, Any]], bool]:
+    from sase_listen.buildinfo import current as _current_build
+    from sase_listen.config import load_config
+    from sase_listen.engines.secrets import describe_api_key_source
+    from sase_listen.paths import cache_dir, config_path, data_dir, state_dir
+
     checks: list[dict[str, Any]] = []
     ok = True
 
@@ -157,6 +157,8 @@ def _run_checks(
 
 
 def _install_check(checks: list[dict[str, Any]]) -> None:
+    from sase_listen.buildinfo import current as _current_build
+
     try:
         info = _current_build()
     except Exception:
@@ -182,6 +184,8 @@ def _install_check(checks: list[dict[str, Any]]) -> None:
 
 
 def _outbox_check(checks: list[dict[str, Any]]) -> None:
+    from sase_listen.feedhost import pending_publishes
+
     pending = pending_publishes()
     if not pending:
         return
@@ -200,6 +204,10 @@ def _outbox_check(checks: list[dict[str, Any]]) -> None:
 def _remote_host_check(
     cfg: SaseListenConfig, checks: list[dict[str, Any]], *, allow_activity: bool = True
 ) -> None:
+    from sase_listen.buildinfo import current as _current_build
+    from sase_listen.cli.progress import activity
+    from sase_listen.feedhost import run_remote
+
     host = cfg.feed.host.strip()
     try:
         with activity(f"Checking feed host {host}…", enabled=allow_activity) as act:
@@ -247,6 +255,10 @@ def _host_build_check(
     local_build: dict[str, Any],
     remote_build: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    from sase_listen.buildinfo import compare_builds
+    from sase_listen.buildinfo import current as _current_build
+    from sase_listen.feed import RECEIVE_PROTOCOL
+
     local_display = str(
         (local_build.get("display") if isinstance(local_build, dict) else "") or "?"
     )
@@ -329,6 +341,9 @@ def _feed_checks(
     ok with a "not configured" detail so Telegram-only users keep a green
     doctor; a half-configured feed fails loudly instead.
     """
+    from sase_listen.feed import FEED_XML_NAME, feed_root, resolve_token
+    from sase_listen.feedhost import feed_role
+
     if cfg is None:
         for name in (
             "feed:host",
