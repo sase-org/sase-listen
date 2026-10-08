@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.2](https://github.com/sase-org/sase-listen/compare/v0.1.1...v0.1.2) (2026-10-08)
+
+
+### Features
+
+* **install:** rename venv recipe to install-venv with private install alias ([1b82d27](https://github.com/sase-org/sase-listen/commit/1b82d27f3eba92b3c77b87d6a60b90884bd69577))
+* **listen:** make multi-machine installs self-diagnosing ([3f2937d](https://github.com/sase-org/sase-listen/commit/3f2937d2e3423a6905d4ac777b1e46b464e4d111))
+* **listen:** ship sase listen as a first-class command plugin ([8c57128](https://github.com/sase-org/sase-listen/commit/8c5712886833b527bdb39197513c4701af225e74))
+
+
+### Performance Improvements
+
+* **cli:** defer heavy imports into command handlers for fast startup ([bbaf58f](https://github.com/sase-org/sase-listen/commit/bbaf58f7cdedecc54af5549cca1672afd71ba6e3))
+
 ## [0.1.1](https://github.com/sase-org/sase-listen/compare/v0.1.0...v0.1.1) (2026-10-08)
 
 
