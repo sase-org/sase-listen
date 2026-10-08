@@ -2463,6 +2463,24 @@ def render(
             notice = replacement_notice(superseded, replaced)
             if notice:
                 warnings.append(notice)
+            skew = published_info.get("build_warning")
+            if isinstance(skew, str) and skew and skew not in warnings:
+                warnings.append(skew)
+            else:
+                raw_warnings = published_info.get("warnings")
+                if isinstance(raw_warnings, list):
+                    for item in raw_warnings:
+                        # Only carry the drift warning; other remote
+                        # warnings are host-side details.
+                        if (
+                            isinstance(item, str)
+                            and item
+                            and item not in warnings
+                            and item != notice
+                            and "sase-listen" in item
+                            and "feed host" in item
+                        ):
+                            warnings.append(item)
             if via and via != "local":
                 listener.on_stage_done(
                     Stage.PUBLISH.value, f"{publish_host} (via {via})"

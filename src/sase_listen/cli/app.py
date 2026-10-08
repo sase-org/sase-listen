@@ -6,7 +6,6 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from sase_listen import __version__
 from sase_listen.cli import audition as audition_mod
 from sase_listen.cli import cache_cmd as cache_mod
 from sase_listen.cli import config_cmd as config_mod
@@ -43,6 +42,22 @@ _COMMAND_MODULES = (
 )
 
 
+class _VersionAction(argparse.Action):
+    """Print the precise build and exit (computed only on --version)."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        from sase_listen.buildinfo import current
+
+        print(f"sase-listen {current().display()}")
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level parser."""
     parser = argparse.ArgumentParser(
@@ -54,9 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=_Formatter,
     )
-    parser.add_argument(
-        "--version", action="version", version=f"sase-listen {__version__}"
-    )
+    parser.add_argument("--version", action=_VersionAction, nargs=0)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     for mod in _COMMAND_MODULES:
         mod.add_parser(sub)

@@ -34,6 +34,7 @@ import yaml
 
 from sase_listen import __version__
 from sase_listen.audio.cover import generate_title_card
+from sase_listen.buildinfo import current as _current_build
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.library import episode_path, list_episode_ids, read_manifest
@@ -861,5 +862,6 @@ def feed_status(
         },
         "host": local_hostname(),
         "sase_listen_version": __version__,
+        "sase_listen_build": _current_build().to_json(),
         "receive_protocol": RECEIVE_PROTOCOL,
     }

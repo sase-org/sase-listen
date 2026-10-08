@@ -133,9 +133,12 @@ sase-listen doctor [--online] [--json]
 ```
 
 Checks config load, ffmpeg resolution, credential presence, writable
-directories, and feed configuration. `--online` is intended to add a one-word
-live synthesis check; **it is a stub today** and reports
-`FAIL: credentials (online check not implemented yet)`.
+directories, install freshness (`install`), the exact build (`version`,
+for example `0.1.1 (editable @ 3ae7310)`), and feed configuration
+(`feed:host` shows the host build; `feed:host-build` fails on renderer /
+host drift). `--version` prints `sase-listen <build>`. `--online` is
+intended to add a one-word live synthesis check; **it is a stub today**
+and reports `FAIL: credentials (online check not implemented yet)`.
 
 ## `cache` — inspect the chunk cache **(stub)**
 

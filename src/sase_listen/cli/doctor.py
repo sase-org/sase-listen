@@ -8,12 +8,13 @@ import shutil
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from sase_listen import __version__
+from sase_listen.buildinfo import compare_builds
+from sase_listen.buildinfo import current as _current_build
 from sase_listen.cli.progress import activity
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.engines.secrets import describe_api_key_source
 from sase_listen.errors import ExitCode, SaseListenError
-from sase_listen.feed import FEED_XML_NAME, feed_root, resolve_token
+from sase_listen.feed import FEED_XML_NAME, RECEIVE_PROTOCOL, feed_root, resolve_token
 from sase_listen.feedhost import feed_role, pending_publishes, run_remote
 from sase_listen.paths import cache_dir, config_path, data_dir, state_dir
 
@@ -144,8 +145,39 @@ def _run_checks(
     before = len(checks)
     _feed_checks(cfg, checks, allow_activity=allow_activity)
     ok = ok and all(item["ok"] for item in checks[before:])
-    checks.append({"name": "version", "ok": True, "detail": __version__})
+    _install_check(checks)
+    ok = ok and bool(checks[-1]["ok"])
+    try:
+        detail = _current_build().display()
+    except Exception:
+        detail = "unknown"
+    checks.append({"name": "version", "ok": True, "detail": detail})
     return checks, ok
+
+
+def _install_check(checks: list[dict[str, Any]]) -> None:
+    try:
+        info = _current_build()
+    except Exception:
+        checks.append(
+            {"name": "install", "ok": True, "detail": "build info unavailable"}
+        )
+        return
+    if not info.stale:
+        source = f" ({info.source})" if info.source else ""
+        checks.append(
+            {"name": "install", "ok": True, "detail": f"{info.install}{source}"}
+        )
+        return
+    if info.missing_dependencies:
+        missing = ", ".join(info.missing_dependencies)
+        detail = f"missing dependencies: {missing}; {info.upgrade_command()}"
+    else:
+        detail = (
+            f"installed metadata {info.metadata_version} != source"
+            f" {info.version}; {info.upgrade_command()}"
+        )
+    checks.append({"name": "install", "ok": False, "detail": detail})
 
 
 def _outbox_check(checks: list[dict[str, Any]]) -> None:
@@ -170,12 +202,30 @@ def _remote_host_check(
             status, dest = run_remote(cfg, ["feed", "--json"], on_attempt=act.update)
     except SaseListenError as exc:
         checks.append({"name": "feed:host", "ok": False, "detail": str(exc)})
+        checks.append(
+            {
+                "name": "feed:host-build",
+                "ok": False,
+                "detail": f"skipped: feed:host failed ({exc})",
+            }
+        )
         return
     proto = int(status.get("receive_protocol") or 0)
     configured = bool(status.get("configured"))
     version = str(status.get("sase_listen_version") or "?")
     episodes = status.get("episodes", 0)
-    detail = f"{host} via {dest} · sase-listen {version} · {episodes} episodes"
+    remote_build = status.get("sase_listen_build")
+    if not isinstance(remote_build, dict):
+        remote_build = None
+    try:
+        local_build = _current_build().to_json()
+    except Exception:
+        local_build = {}
+    if isinstance(remote_build, dict):
+        remote_display = str(remote_build.get("display") or f"sase-listen {version}")
+    else:
+        remote_display = f"sase-listen {version}"
+    detail = f"{host} via {dest} · sase-listen {remote_display} · {episodes} episodes"
     checks.append(
         {
             "name": "feed:host",
@@ -183,6 +233,84 @@ def _remote_host_check(
             "detail": detail,
         }
     )
+    checks.append(_host_build_check(host, dest, proto, local_build, remote_build))
+
+
+def _host_build_check(
+    host: str,
+    dest: str,
+    proto: int,
+    local_build: dict[str, Any],
+    remote_build: dict[str, Any] | None,
+) -> dict[str, Any]:
+    local_display = str(
+        (local_build.get("display") if isinstance(local_build, dict) else "") or "?"
+    )
+    remote_display = str(
+        (remote_build.get("display") if isinstance(remote_build, dict) else "") or "?"
+    )
+    both = f"this machine runs {local_display}; feed host {host} runs {remote_display}"
+    if proto < RECEIVE_PROTOCOL:
+        return {
+            "name": "feed:host-build",
+            "ok": False,
+            "detail": (
+                f"host protocol {proto} < local {RECEIVE_PROTOCOL}:"
+                f" {both} — upgrade sase-listen on {host}"
+                " (see docs/multi-machine.md)"
+            ),
+        }
+    if isinstance(remote_build, dict) and bool(remote_build.get("stale")):
+        remote_upgrade = str(remote_build.get("upgrade_command") or "")
+        if remote_upgrade:
+            fix = f"ssh {dest} '{remote_upgrade}'"
+        else:
+            fix = f"upgrade sase-listen on {host} (see docs/multi-machine.md)"
+        return {
+            "name": "feed:host-build",
+            "ok": False,
+            "detail": f"host is stale: {both} — {fix}",
+        }
+    compared = compare_builds(local_build, remote_build)
+    if compared.outcome == "same":
+        return {
+            "name": "feed:host-build",
+            "ok": True,
+            "detail": f"{compared.message} ({both})",
+        }
+    if compared.outcome == "remote_unknown":
+        return {
+            "name": "feed:host-build",
+            "ok": False,
+            "detail": (
+                f"{compared.message} ({both}) —"
+                f" upgrade sase-listen on {host} (see docs/multi-machine.md)"
+            ),
+        }
+    if compared.outcome == "local_older":
+        try:
+            fix = _current_build().upgrade_command()
+        except Exception:
+            fix = "upgrade sase-listen on this machine"
+        return {
+            "name": "feed:host-build",
+            "ok": False,
+            "detail": f"{compared.message} ({both}) — {fix}",
+        }
+    # differ or remote_older: the host side must move.
+    if isinstance(remote_build, dict):
+        remote_upgrade = str(remote_build.get("upgrade_command") or "")
+    else:
+        remote_upgrade = ""
+    if remote_upgrade:
+        fix = f"ssh {dest} '{remote_upgrade}'"
+    else:
+        fix = f"upgrade sase-listen on {host} (see docs/multi-machine.md)"
+    return {
+        "name": "feed:host-build",
+        "ok": False,
+        "detail": f"{compared.message} ({both}) — {fix}",
+    }
 
 
 def _feed_checks(

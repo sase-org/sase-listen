@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Every install now reports its exact build (`--version`, `doctor`
+  `version`, feed status, and `feed receive`). A stale environment exits
+  3 with the repair command instead of a traceback, `doctor` gains
+  `install` and `feed:host-build` checks that fail on renderer/host
+  drift, and remote publishes warn when the host build differs.
+
 - `publish` keeps one feed item per title: publishing an episode
   supersedes other feed episodes with the same title (feed copies only;
   the library is kept) and reports `superseded`/`replaced`, with a

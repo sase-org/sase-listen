@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from sase_listen.cli.progress import activity
 from sase_listen.config import SaseListenConfig, load_config
@@ -139,7 +140,12 @@ def run_publish(args: argparse.Namespace) -> int:
             _queue_remote_failure(cfg, episode_id, exc)
         return _print_error(exc, as_json=as_json, prefix="sase-listen publish")
     if as_json:
-        print(json.dumps({"ok": True, **result}))
+        payload: dict[str, object] = {"ok": True, **result}
+        if "warnings" not in payload:
+            skew = result.get("build_warning")
+            if isinstance(skew, str) and skew:
+                payload["warnings"] = [skew]
+        print(json.dumps(payload))
     else:
         print(f"Published {result['episode_id']} to the feed.")
         print(f"Audio: {result['item_url']}")
@@ -156,6 +162,15 @@ def run_publish(args: argparse.Namespace) -> int:
         notice = replacement_notice(superseded, bool(result.get("replaced", False)))
         if notice:
             print(f"note: {STALE_DOWNLOAD_HINT}")
+        skew = result.get("build_warning")
+        if isinstance(skew, str) and skew:
+            print(f"warning: {skew}", file=sys.stderr)
+        else:
+            raw_warnings = result.get("warnings")
+            if isinstance(raw_warnings, list):
+                for item in raw_warnings:
+                    if isinstance(item, str) and item:
+                        print(f"warning: {item}", file=sys.stderr)
     return int(ExitCode.OK)
 
 

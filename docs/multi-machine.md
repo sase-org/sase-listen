@@ -34,6 +34,30 @@ feed:
 this machine. `host_ssh` is tried in order; if it is omitted, the host
 name is the only destination.
 
+## Keep machines in step
+
+Every machine runs its own copy, and the host runs `feed receive`.
+
+- `--version` and `doctor` show the exact build, for example
+  `sase-listen 0.1.1 (editable @ 3ae7310)`.
+- `doctor`'s `feed:host-build` check, and the publish warning, flag drift:
+  a successful remote publish warns when the feed host's build differs,
+  for example `feed host apollo runs sase-listen 0.1.0 (editable @
+  355e649); this machine runs 0.1.1 (editable @ 3ae7310) — run
+  `sase-listen doctor`.
+- Upgrade commands per install kind:
+  - editable uv tool install:
+    `git -C <checkout> pull --ff-only && uv tool upgrade --reinstall
+    sase-listen` (`~/.local/bin/uv` over non-interactive SSH).
+  - PyPI install: `uv tool upgrade sase-listen`.
+  - git install: `uv tool install --force <source url>`.
+  - other installers: reinstall with the installer you used, for example
+    `pipx reinstall sase-listen`.
+- A plain `git pull` updates an editable install's code but not its
+  dependencies, so always follow it with `uv tool upgrade --reinstall
+  sase-listen`. Otherwise the next PDF render fails with
+  `cannot import 'pdfminer'` (exit 3) until a reinstall.
+
 ## Per-machine checklist
 
 On every machine that should publish:
@@ -46,6 +70,8 @@ On every machine that should publish:
    on the host (`pass show sase_listen_feed_token` or `feed.token`).
 3. Prove SSH: `ssh -o BatchMode=yes apollo true` (and `apollo-do` if
    you list it in `host_ssh`).
+4. Run `sase-listen doctor` on the renderer; `feed:host` and
+   `feed:host-build` must be ok.
 
 ## What travels over SSH
 

@@ -23,6 +23,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sase_listen import __version__
+from sase_listen.buildinfo import compare_builds
+from sase_listen.buildinfo import current as _current_build
 from sase_listen.config import SaseListenConfig
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.feed import (
@@ -462,6 +465,11 @@ def receive_episode(
     result["item_url"] = mask_token_in_url(str(result.get("item_url", "")), token)
     result["ok"] = True
     result["receive_protocol"] = RECEIVE_PROTOCOL
+    result["sase_listen_version"] = __version__
+    try:
+        result["sase_listen_build"] = _current_build().to_json()
+    except Exception:
+        result["sase_listen_build"] = {}
     return result
 
 
@@ -557,6 +565,40 @@ def _push_episode(
     return result
 
 
+def build_skew_warning(host: str, remote_build: object) -> str | None:
+    """Return a drift warning when the feed host build differs, else None."""
+    try:
+        local_build = _current_build().to_json()
+    except Exception:
+        return None
+    remote = remote_build if isinstance(remote_build, dict) else None
+    try:
+        compared = compare_builds(local_build, remote)
+    except Exception:
+        return None
+    if compared.outcome == "same":
+        return None
+    local_display = str(local_build.get("display") or "?")
+    if isinstance(remote, dict):
+        remote_display = str(
+            remote.get("display")
+            or remote.get("version")
+            or payload_version_fallback(remote)
+        )
+    else:
+        remote_display = "unknown (predates build tracking)"
+    return (
+        f"feed host {host} runs sase-listen {remote_display};"
+        f" this machine runs {local_display} — run sase-listen doctor"
+    )
+
+
+def payload_version_fallback(remote: dict[str, Any]) -> str:
+    """Best-effort version string for a remote payload without display."""
+    version = str(remote.get("sase_listen_version") or remote.get("version") or "?")
+    return version
+
+
 def flush_pending(
     cfg: SaseListenConfig, *, on_step: Callable[[str], None] | None = None
 ) -> dict[str, Any]:
@@ -617,6 +659,14 @@ def publish_any(
         )
         payload["host"] = host
         payload["via"] = dest
+        warning = build_skew_warning(host, payload.get("sase_listen_build"))
+        if warning is not None:
+            payload["build_warning"] = warning
+            existing = payload.get("warnings")
+            if isinstance(existing, list):
+                payload["warnings"] = [*existing, warning]
+            else:
+                payload["warnings"] = [warning]
         return payload
     if on_step is not None:
         on_step("updating the feed")

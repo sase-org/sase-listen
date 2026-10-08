@@ -129,6 +129,23 @@ ssh apollo '~/.local/bin/uv tool install --force git+https://github.com/sase-org
 
 Then upgrade each renderer. See [Multi-machine publish](multi-machine.md).
 
+## `cannot import '<module>' … out of date with its code` (exit 3)
+
+The install's Python environment is older than its code (usually an
+editable install after a `git pull` without a reinstall). Run the
+`Reinstall:` command from the hint, for example
+`uv tool upgrade --reinstall sase-listen`. The remote variant
+`on <host>: sase-listen cannot import …` means the feed host is stale;
+run its repair command over SSH first.
+
+## `feed:host-build` / "feed host runs sase-listen X; this machine runs Y"
+
+Renderer and host builds drifted. `doctor` fails `feed:host-build`
+(exit 3) and successful publishes warn with both builds. Upgrade the
+older side first (host first), then re-run `sase-listen doctor` until
+`feed:host` and `feed:host-build` are ok. See
+[Multi-machine publish](multi-machine.md).
+
 ## this machine is not the feed host
 
 This process was invoked as a remote call (`SASE_LISTEN_REMOTE_CALL=1`)
