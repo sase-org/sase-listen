@@ -15,17 +15,19 @@ private podcast feed.
   earlier `research:202606/sase_audio_generation_consolidated.md`.
 - **Epic plan:** `plan:202610/sase_listen.md` (epic bead `sase-1e3`,
   [bead page](https://github.com/sase-org/sase--beads/blob/main/pages/sase-1e3/README.md)),
-  which fixed the design decisions this repo implements: a standalone tool
-  (not a sase plugin), the narration script as the renderer contract, one
-  narrator per episode, Gemini 3.8 Flash TTS by default, MP3 mono 24 kHz
-  64 kb/s at −16 LUFS, and delivery via Telegram `sendAudio` plus a
-  Tailscale-Funnel-served private feed.
+  which fixed the design decisions this repo implements: the narration
+  script as the renderer contract, one narrator per episode, Gemini 3.8
+  Flash TTS by default, MP3 mono 24 kHz 64 kb/s at −16 LUFS, and delivery
+  via Telegram `sendAudio` plus a Tailscale-Funnel-served private feed.
+  (Its "standalone tool, not a sase plugin" decision is superseded:
+  sase-listen now also ships as the `sase listen` command plugin.)
 
 ## Key decisions inherited from the plan
 
-- **Standalone tool.** `uv tool install sase-listen` puts the CLI on `PATH`;
-  SASE integration lives in `sase-research-artifacts` (`#research/audio`,
-  swarm stage) and `sase-telegram` (`sendAudio`). See
+- **Two installs, one codebase.** `uv tool install sase-listen` puts the
+  standalone CLI on `PATH`; `sase plugin install listen` mounts `sase listen`
+  in the sase CLI. SASE integration lives in `sase-research-artifacts`
+  (`#research/audio`, swarm stage) and `sase-telegram` (`sendAudio`). See
   [SASE integration](sase-integration.md).
 - **The narration script is the contract, and the CLI owns it.** `guide` and
   `lint` ship in this package so the rules never drift from the renderer.

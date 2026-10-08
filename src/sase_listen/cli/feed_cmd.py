@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 
+from sase_listen import invocation
 from sase_listen.cli.progress import activity
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
@@ -28,6 +29,7 @@ from sase_listen.feedhost import (
 
 def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    prog: str = "sase-listen",
 ) -> argparse.ArgumentParser:
     """Register the feed parser."""
     p = sub.add_parser("feed", help="Manage the private podcast feed.")
@@ -56,7 +58,7 @@ def add_parser(
     p.add_argument("--show-url", action="store_true", help="Show the unmasked URL.")
     p.set_defaults(func=run)
     p.epilog = (
-        "Example: sase-listen feed init --base-url https://host:8443. "
+        f"Example: {prog} feed init --base-url https://host:8443. "
         "`feed receive` is the internal SSH transport endpoint."
     )
     return p
@@ -84,7 +86,9 @@ def _load_cfg(args: argparse.Namespace) -> SaseListenConfig | None:
         cfg, _ = load_config()
     except ValueError as exc:
         wrapped = SaseListenError(str(exc), ExitCode.CONFIG)
-        _print_error(wrapped, as_json=bool(args.json), prefix="sase-listen feed")
+        _print_error(
+            wrapped, as_json=bool(args.json), prefix=invocation.command("feed")
+        )
         return None
     return cfg
 
@@ -96,16 +100,18 @@ def _run_init(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
         return _print_error(
             SaseListenError(
                 f"This machine publishes to feed host {host}; "
-                f"run `sase-listen feed init` on {host}.",
+                f"run `{invocation.command('feed', 'init')}` on {host}.",
                 ExitCode.USAGE,
             ),
             as_json=as_json,
-            prefix="sase-listen feed init",
+            prefix=invocation.command("feed", "init"),
         )
     try:
         info = init_feed(args.base_url or "", print_only=bool(args.print_only))
     except SaseListenError as exc:
-        return _print_error(exc, as_json=as_json, prefix="sase-listen feed init")
+        return _print_error(
+            exc, as_json=as_json, prefix=invocation.command("feed", "init")
+        )
     if as_json:
         print(json.dumps({"ok": True, **info}))
         return int(ExitCode.OK)
@@ -142,7 +148,9 @@ def _print_status(status: dict[str, object], *, qr: str) -> None:
         print(f"URL: {status['url']}")
     else:
         print("Feed is not configured yet.")
-        print("Run `sase-listen feed init --base-url URL` to set it up.")
+        print(
+            f"Run `{invocation.command('feed', 'init')} --base-url URL` to set it up."
+        )
     print(f"Episodes: {status['episodes']}  Size: {status['size_bytes']} bytes")
     print(f"Last build: {status['last_build'] or 'never'}")
     retention = status["retention"]
@@ -196,13 +204,16 @@ def _run_status(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
                 raise SaseListenError(
                     "No feed URL is configured.",
                     ExitCode.CONFIG,
-                    hint="Run `sase-listen feed init --base-url URL` first.",
+                    hint=(
+                        f"Run `{invocation.command('feed', 'init')}"
+                        " --base-url URL` first."
+                    ),
                 )
             qr = print_qr(qr_url)
             if as_json:
                 status["qr"] = qr
     except SaseListenError as exc:
-        return _print_error(exc, as_json=as_json, prefix="sase-listen feed")
+        return _print_error(exc, as_json=as_json, prefix=invocation.command("feed"))
     if as_json:
         print(json.dumps({"ok": True, **status}))
         return int(ExitCode.OK)
@@ -230,7 +241,7 @@ def _run_rebuild(
         else:
             result = rebuild_feed(cfg)
     except SaseListenError as exc:
-        return _print_error(exc, as_json=as_json, prefix="sase-listen feed")
+        return _print_error(exc, as_json=as_json, prefix=invocation.command("feed"))
     episodes = result["episodes"]
     removed = result["removed"]
     if as_json:
@@ -252,10 +263,12 @@ def _run_receive(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
             SaseListenError(
                 "feed receive requires an episode id.",
                 ExitCode.USAGE,
-                hint="Usage: sase-listen feed receive EPISODE_ID --json",
+                hint=(
+                    f"Usage: {invocation.command('feed', 'receive')} EPISODE_ID --json"
+                ),
             ),
             as_json=as_json,
-            prefix="sase-listen feed",
+            prefix=invocation.command("feed"),
         )
     try:
         refuse_if_misrouted(cfg)
@@ -273,7 +286,7 @@ def _run_receive(args: argparse.Namespace, cfg: SaseListenConfig) -> int:
             )
         result = receive_episode(episode_id, data, cfg)
     except SaseListenError as exc:
-        return _print_error(exc, as_json=True, prefix="sase-listen feed")
+        return _print_error(exc, as_json=True, prefix=invocation.command("feed"))
     print(json.dumps({"ok": True, **{k: v for k, v in result.items() if k != "ok"}}))
     return int(ExitCode.OK)
 

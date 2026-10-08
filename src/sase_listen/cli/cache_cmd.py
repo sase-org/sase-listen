@@ -9,6 +9,7 @@ from sase_listen.errors import ExitCode
 
 def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    prog: str = "sase-listen",
 ) -> argparse.ArgumentParser:
     """Register the cache parser."""
     p = sub.add_parser("cache", help="Show cache stats and prune.")
@@ -21,11 +22,13 @@ def add_parser(
     )
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen cache prune --older-than 30d"
+    p.epilog = f"Example: {prog} cache prune --older-than 30d"
     return p
 
 
 def run(args: argparse.Namespace) -> int:
     """Cache stub (cli phase implements)."""
-    print("sase-listen cache is not implemented yet (owner: cli phase).")
+    from sase_listen import invocation
+
+    print(f"{invocation.command('cache')} is not implemented yet (owner: cli phase).")
     return int(ExitCode.UNEXPECTED)

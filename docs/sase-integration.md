@@ -1,9 +1,19 @@
 # SASE integration
 
-sase-listen is a standalone tool: it never imports `sase`, declares no
-`sase_*` entry points, and SASE-side integration lives in the sibling plugin
-repos. sase-listen only shells out to `sase artifact read` at runtime to
-resolve `kind:path` refs.
+sase-listen never imports `sase`: the only `sase_*` entry point is
+`sase_commands` (which mounts the `sase listen` command plugin), and
+SASE-side integration lives in the sibling plugin repos. sase-listen only
+shells out to `sase artifact read` at runtime to resolve `kind:path` refs.
+
+Two installs, one codebase:
+
+- `sase plugin install listen` gives `sase listen` — the first-class
+  command plugin for people who use sase.
+- `uv tool install sase-listen` gives the standalone binary for people who
+  don't use sase.
+
+Both run the same code; help text and "run this next" hints name whichever
+binary was invoked.
 
 ## `#research/audio` xprompt (sase-research-artifacts)
 

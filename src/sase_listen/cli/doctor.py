@@ -8,6 +8,7 @@ import shutil
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from sase_listen import invocation
 from sase_listen.buildinfo import compare_builds
 from sase_listen.buildinfo import current as _current_build
 from sase_listen.cli.progress import activity
@@ -188,7 +189,10 @@ def _outbox_check(checks: list[dict[str, Any]]) -> None:
         {
             "name": "feed:outbox",
             "ok": True,
-            "detail": (f"{len(pending)} queued — run `sase-listen publish --pending`"),
+            "detail": (
+                f"{len(pending)} queued"
+                f" — run `{invocation.command('publish', '--pending')}`"
+            ),
         }
     )
 
@@ -410,6 +414,7 @@ def _feed_checks(
 
 def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    prog: str = "sase-listen",
 ) -> argparse.ArgumentParser:
     """Register the doctor parser."""
     p = sub.add_parser("doctor", help="Check config, ffmpeg, credentials, and dirs.")
@@ -418,7 +423,7 @@ def add_parser(
     )
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen doctor --online"
+    p.epilog = f"Example: {prog} doctor --online"
     return p
 
 

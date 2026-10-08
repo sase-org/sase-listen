@@ -8,6 +8,16 @@ Exit codes: `0` ok, `1` unexpected, `2` usage, `3` config/credentials,
 `4` synthesis failed after retries, `5` quality gate failed, `6` structural
 lint errors (`render` refuses unless `--force`), `130` interrupted by Ctrl-C.
 
+## `sase listen` program name
+
+Under the command plugin (`sase plugin install listen`), every example on
+this page reads `sase listen …` instead of `sase-listen …`: usage lines,
+error prefixes, epilogs, and "run this next" hints all name the invoked
+binary. Version strings, install paths, and the SSH wire command keep the
+`sase-listen` distribution name. Path-like arguments (`render`/`script`
+source, `lint` script, `--cover`, `-o/--output`, `-H/--html`, `--source`,
+`audition --text`) carry `sase_completion = "path"` for shell completion.
+
 ## Live progress
 
 `render` (and the other network-bound commands) always show what you are

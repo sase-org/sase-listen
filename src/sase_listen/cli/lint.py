@@ -10,21 +10,27 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from sase_listen import invocation
 from sase_listen.errors import ExitCode
 from sase_listen.script import Finding, lint_file
 
 
 def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    prog: str = "sase-listen",
 ) -> argparse.ArgumentParser:
     """Register the lint parser."""
     p = sub.add_parser("lint", help="Validate a narration script.")
-    p.add_argument("script", help="Narration script to check.")
-    p.add_argument("--source", default="", help="Original report for number fidelity.")
+    script_action = p.add_argument("script", help="Narration script to check.")
+    invocation.mark_path_completion(script_action)
+    source_action = p.add_argument(
+        "--source", default="", help="Original report for number fidelity."
+    )
+    invocation.mark_path_completion(source_action)
     p.add_argument("--strict", action="store_true", help="Treat warnings as errors.")
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen lint episode_narration.md --source report.md"
+    p.epilog = f"Example: {prog} lint episode_narration.md --source report.md"
     return p
 
 
@@ -36,13 +42,14 @@ def _failed(findings: list[Finding], strict: bool) -> bool:
 
 def run(args: argparse.Namespace) -> int:
     """Validate a script against the contract and listenability rules."""
+    prefix = invocation.command("lint")
     script_path = Path(args.script)
     if not script_path.exists():
-        print(f"sase-listen lint: file not found: {script_path}", file=sys.stderr)
+        print(f"{prefix}: file not found: {script_path}", file=sys.stderr)
         return int(ExitCode.USAGE)
     source_path = Path(args.source) if args.source else None
     if source_path is not None and not source_path.exists():
-        print(f"sase-listen lint: source not found: {source_path}", file=sys.stderr)
+        print(f"{prefix}: source not found: {source_path}", file=sys.stderr)
         return int(ExitCode.USAGE)
     findings, _text = lint_file(script_path, source_path)
     errors = sum(1 for f in findings if f.severity == "error")

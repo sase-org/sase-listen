@@ -198,6 +198,51 @@ def test_upgrade_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "pipx reinstall" in index.upgrade_command()
 
 
+def test_upgrade_command_plugin_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "sase-toolenv"
+    prefix.mkdir()
+    (prefix / "uv-receipt.toml").write_text(
+        "[tool]\n"
+        "requirements = [\n"
+        '    { name = "sase", editable = "/home/u/src" },\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(buildinfo.sys, "prefix", str(prefix))
+    monkeypatch.setattr(buildinfo.shutil, "which", lambda name: "/bin/uv")
+    # Both editable and index installs repair through the plugin manager
+    # when the interpreter is the sase tool environment.
+    editable = BuildInfo(
+        install="editable",
+        source="/home/u/src",
+        version="0.1.1",
+        metadata_version="0.1.1",
+    )
+    assert editable.upgrade_command() == "sase plugin update listen"
+    index = BuildInfo(install="index", version="0.1.1", metadata_version="0.1.1")
+    assert index.upgrade_command() == "sase plugin update listen"
+
+
+def test_upgrade_command_receipt_without_sase_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "toolenv"
+    prefix.mkdir()
+    (prefix / "uv-receipt.toml").write_text(
+        "[tool]\n"
+        "requirements = [\n"
+        '    { name = "sase-listen", editable = "/home/u/src" },\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(buildinfo.sys, "prefix", str(prefix))
+    monkeypatch.setattr(buildinfo.shutil, "which", lambda name: "/bin/uv")
+    index = BuildInfo(install="index", version="0.1.1", metadata_version="0.1.1")
+    assert index.upgrade_command() == "/bin/uv tool upgrade sase-listen"
+
+
 def test_compare_builds_outcomes() -> None:
     def _b(version: str, commit: str = "", display: str = "") -> dict[str, Any]:
         return {"version": version, "commit": commit, "display": display or version}
@@ -221,16 +266,18 @@ def test_cli_guard_import_error(monkeypatch: pytest.MonkeyPatch, capsys: Any) ->
 
     real_main = app_mod.main
 
-    def _boom_import(argv: Any = None) -> int:
+    def _boom_import(argv: Any = None, **kwargs: Any) -> int:
         raise ImportError("No module named 'lxml'", name="lxml")
 
     monkeypatch.setattr(app_mod, "main", _boom_import)
     assert cli_entry.main([]) == 3
     assert "out of date" in capsys.readouterr().err
+    assert cli_entry.main([], prog="sase listen") == 3
+    assert "sase listen" in capsys.readouterr().err
 
     monkeypatch.setattr(app_mod, "main", real_main)
 
-    def _boom_cmd(argv: Any = None) -> int:
+    def _boom_cmd(argv: Any = None, **kwargs: Any) -> int:
         raise ImportError("No module named 'trafilatura'", name="trafilatura")
 
     monkeypatch.setattr(app_mod, "main", _boom_cmd)
@@ -241,7 +288,7 @@ def test_cli_guard_import_error(monkeypatch: pytest.MonkeyPatch, capsys: Any) ->
     assert "reinstall" in payload["error"]["hint"].lower()
     monkeypatch.setattr(app_mod, "main", real_main)
 
-    def _boom_bug(argv: Any = None) -> int:
+    def _boom_bug(argv: Any = None, **kwargs: Any) -> int:
         raise ImportError("bad", name="sase_listen.foo")
 
     monkeypatch.setattr(app_mod, "main", _boom_bug)

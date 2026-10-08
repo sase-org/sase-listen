@@ -9,6 +9,9 @@ sase-listen doctor
 sase-listen render report_narration.md -o episode.mp3
 ```
 
+Sase users can skip the standalone binary: `sase plugin install listen`
+mounts the same CLI as `sase listen`.
+
 One narrator reads the whole episode (Gemini TTS by default). Every `##`
 heading becomes an ID3 chapter and a synthesis boundary. The MP3 is mono,
 24 kHz, 64 kb/s at −16 LUFS — about 7 MB per 15 minutes — with an embedded

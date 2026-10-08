@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from sase_listen import invocation
 from sase_listen.config import SaseListenConfig
 from sase_listen.engines.base import (
     CredentialsError,
@@ -367,7 +368,7 @@ def author_script(
             ExitCode.SCRIPT_STRUCTURAL,
             hint=(
                 "Edit the saved script and rerun the same command, or run "
-                f"`sase-listen render {script_path}`."
+                f"`{invocation.command('render', str(script_path))}`."
             ),
         )
     return AuthoredScript(script, script_path, summary)

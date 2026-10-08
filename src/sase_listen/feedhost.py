@@ -2,7 +2,8 @@
 
 Every machine renders locally. When ``feed.host`` names another machine,
 publishing packs the library episode as an uncompressed tar and streams it
-to ``sase-listen feed receive`` on the host. The host validates, imports
+to the ``feed receive`` endpoint on the host (standalone ``sase-listen``
+first, then ``sase listen``). The host validates, imports
 into its own library, and publishes under the feed lock. A local outbox
 retries failed remote publishes.
 """
@@ -23,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sase_listen import __version__
+from sase_listen import __version__, invocation
 from sase_listen.buildinfo import compare_builds
 from sase_listen.buildinfo import current as _current_build
 from sase_listen.config import SaseListenConfig
@@ -50,6 +51,12 @@ MAX_RECEIVE_MEMBERS = 64
 MAX_RECEIVE_BYTES = 256 * 1024 * 1024
 
 PENDING_HINT = "sase-listen publish --pending"
+
+
+def pending_hint() -> str:
+    """Return the publish-outbox hint for the invoked program name."""
+    return invocation.command("publish", "--pending")
+
 
 PUBLICKEY_DENIED = "Permission denied (publickey"
 SSH_ADD_TIMEOUT_S = 10
@@ -107,7 +114,7 @@ class FeedHostUnreachable(SaseListenError):
                 "SSH reached the host but no key was accepted; load the key "
                 "the host accepts into that agent (`ssh-add`), confirm "
                 f"`ssh -o BatchMode=yes {dest} true` from the same environment, "
-                f"then run `{PENDING_HINT}`."
+                f"then run `{pending_hint()}`."
             )
         super().__init__(
             message,
@@ -163,10 +170,22 @@ def ssh_destinations(cfg: SaseListenConfig) -> list[str]:
 
 
 def ssh_argv(dest: str, remote_args: Sequence[str]) -> list[str]:
-    """Build the ssh argv that runs ``sase-listen`` on ``dest``."""
+    """Build the ssh argv that runs listen on ``dest``.
+
+    The remote shell prefers the standalone ``sase-listen`` binary, then
+    the ``sase listen`` plugin command, and fails with exit 127 (mapped to
+    an install hint) when neither exists.
+    """
     ssh = os.environ.get(SSH_ENV, "").strip() or DEFAULT_SSH
-    remote = shlex.join(["sase-listen", *remote_args])
-    cmd = f'export PATH="$HOME/.local/bin:$PATH" {REMOTE_CALL_ENV}=1; exec {remote}'
+    remote = shlex.join(remote_args)
+    cmd = (
+        f'export PATH="$HOME/.local/bin:$PATH" {REMOTE_CALL_ENV}=1; '
+        f"if command -v sase-listen >/dev/null 2>&1; "
+        f"then exec sase-listen {remote}; "
+        f"elif command -v sase >/dev/null 2>&1; "
+        f"then exec sase listen {remote}; "
+        f"else echo 'sase-listen: not installed' >&2; exit 127; fi"
+    )
     return [
         ssh,
         "-o",
@@ -210,8 +229,7 @@ def _raise_remote_error(
     host: str, proc: subprocess.CompletedProcess[bytes], stdout: str, stderr: str
 ) -> None:
     """Raise a SaseListenError from a non-zero remote exit."""
-    args_text = " ".join(str(a) for a in proc.args) if proc.args else ""
-    if proc.returncode == 2 and "invalid choice" in stderr and "receive" in args_text:
+    if proc.returncode == 2 and "invalid choice: 'receive'" in stderr:
         raise _too_old_error(host)
     try:
         payload = _parse_json_object(stdout)
@@ -299,7 +317,17 @@ def run_remote(
         if proc.returncode == 255:
             last_stderr = stderr or "ssh exit 255"
             continue
-        if proc.returncode == 2 and "invalid choice" in stderr:
+        if proc.returncode == 127:
+            raise SaseListenError(
+                f"listen is not installed on {host}",
+                ExitCode.UNEXPECTED,
+                hint=(
+                    "install it there:"
+                    " `sase plugin install listen`"
+                    " (or `uv tool install sase-listen`)"
+                ),
+            )
+        if proc.returncode == 2 and "invalid choice: 'receive'" in stderr:
             raise _too_old_error(host)
         if proc.returncode != 0:
             _raise_remote_error(host, proc, stdout, stderr)
@@ -342,7 +370,7 @@ def _validate_member(member: tarfile.TarInfo) -> None:
         raise SaseListenError(
             f"episode archive member '{name}' is not a plain file name.",
             ExitCode.USAGE,
-            hint="Re-pack the episode with sase-listen publish.",
+            hint=f"Re-pack the episode with {invocation.command('publish')}.",
         )
     if not MEMBER_NAME_RE.match(name):
         raise SaseListenError(
@@ -421,7 +449,7 @@ def receive_episode(
         raise SaseListenError(
             "episode archive is not a valid tar.",
             ExitCode.USAGE,
-            hint="Re-pack the episode with sase-listen publish.",
+            hint=f"Re-pack the episode with {invocation.command('publish')}.",
         ) from exc
     if "manifest.json" not in payloads:
         raise SaseListenError(
@@ -589,7 +617,8 @@ def build_skew_warning(host: str, remote_build: object) -> str | None:
         remote_display = "unknown (predates build tracking)"
     return (
         f"feed host {host} runs sase-listen {remote_display};"
-        f" this machine runs {local_display} — run sase-listen doctor"
+        f" this machine runs {local_display}"
+        f" — run {invocation.command('doctor')}"
     )
 
 

@@ -57,6 +57,9 @@ Changelog = "https://github.com/sase-org/sase-listen/blob/master/CHANGELOG.md"
 [project.scripts]
 sase-listen = "sase_listen.cli:main"
 
+[project.entry-points."sase_commands"]
+listen = "sase_listen.sase_command"
+
 [dependency-groups]
 dev = [
     "ruff",

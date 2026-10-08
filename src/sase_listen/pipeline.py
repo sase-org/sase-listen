@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from sase_listen import __version__
+from sase_listen import __version__, invocation
 from sase_listen.audio import (
     ChapterAudio,
     ChapterMark,
@@ -68,7 +68,13 @@ from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.events import RenderEvents as RenderEvents
 from sase_listen.events import Stage
 from sase_listen.feed import mark_manifest_published, replacement_notice
-from sase_listen.feedhost import PENDING_HINT, feed_role, publish_any, queue_publish
+from sase_listen.feedhost import (
+    PENDING_HINT,
+    feed_role,
+    pending_hint,
+    publish_any,
+    queue_publish,
+)
 from sase_listen.lexicon import Lexicon, load_merged
 from sase_listen.library import (
     atomic_commit,
@@ -915,7 +921,10 @@ def check_lint(script_text: str, *, force: bool) -> tuple[list[str], list[str]]:
         raise SaseListenError(
             f"Script has structural errors ({rules}); refusing to render.",
             ExitCode.SCRIPT_STRUCTURAL,
-            hint="Fix the script (see `sase-listen lint`) or re-run with --force.",
+            hint=(
+                f"Fix the script (see `{invocation.command('lint')}`)"
+                " or re-run with --force."
+            ),
         )
     warnings = [
         f"{f.rule} {f.line}:{f.col}: {f.message}"
@@ -2426,17 +2435,18 @@ def render(
                 queue_publish(plan.episode_id, str(exc))
                 publish_queued = True
                 host = cfg.feed.host.strip()
+                outbox_hint = pending_hint()
                 if request.publish:
-                    if PENDING_HINT not in exc.hint:
+                    if PENDING_HINT not in exc.hint and outbox_hint not in exc.hint:
                         exc.hint = (
-                            f"{exc.hint} {PENDING_HINT}".strip()
+                            f"{exc.hint} {outbox_hint}".strip()
                             if exc.hint
-                            else PENDING_HINT
+                            else outbox_hint
                         )
                     raise
                 warnings.append(
                     f"Auto-publish to {host} failed ({exc}); queued — "
-                    "run `sase-listen publish --pending`"
+                    f"run `{outbox_hint}`"
                 )
                 listener.on_stage_done(
                     Stage.PUBLISH.value, f"queued · {exc}", warning=True

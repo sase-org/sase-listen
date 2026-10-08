@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 
+from sase_listen import invocation
 from sase_listen.cli.progress import activity
 from sase_listen.config import SaseListenConfig, load_config
 from sase_listen.errors import ExitCode, SaseListenError
@@ -19,6 +20,7 @@ from sase_listen.feedhost import (
     PENDING_HINT,
     feed_role,
     flush_pending,
+    pending_hint,
     publish_any,
     queue_publish,
     refuse_if_misrouted,
@@ -28,6 +30,7 @@ from sase_listen.feedhost import (
 
 def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    prog: str = "sase-listen",
 ) -> argparse.ArgumentParser:
     """Register publish and unpublish parsers."""
     p = sub.add_parser("publish", help="Publish an episode to the feed.")
@@ -82,7 +85,7 @@ def _load_cfg(args: argparse.Namespace) -> SaseListenConfig | None:
                 )
             )
         else:
-            print(f"sase-listen publish: error: {exc}")
+            print(f"{invocation.command('publish')}: error: {exc}")
         return None
     return cfg
 
@@ -91,8 +94,9 @@ def _queue_remote_failure(
     cfg: SaseListenConfig, episode_id: str, exc: SaseListenError
 ) -> None:
     queue_publish(episode_id, str(exc))
-    if PENDING_HINT not in exc.hint:
-        exc.hint = f"{exc.hint} {PENDING_HINT}".strip() if exc.hint else PENDING_HINT
+    hint = pending_hint()
+    if PENDING_HINT not in exc.hint and hint not in exc.hint:
+        exc.hint = f"{exc.hint} {hint}".strip() if exc.hint else hint
 
 
 def run_publish(args: argparse.Namespace) -> int:
@@ -115,14 +119,14 @@ def run_publish(args: argparse.Namespace) -> int:
                 for item in failed:
                     print(f"  failed {item['episode_id']}: {item['error']}")
                 if failed:
-                    print(f"hint: {PENDING_HINT}")
+                    print(f"hint: {pending_hint()}")
             return int(ExitCode.OK if not failed else ExitCode.UNEXPECTED)
         episode_id = resolve_episode_ref(args.episode or "", latest=bool(args.latest))
         if not episode_id and not args.latest:
             raise SaseListenError(
                 "An episode id, MP3 path, or --latest is required.",
                 ExitCode.USAGE,
-                hint="Example: sase-listen publish --latest",
+                hint=f"Example: {invocation.command('publish')} --latest",
             )
         host = cfg.feed.host.strip()
         target = host if feed_role(cfg) == "remote" else "the local feed"
@@ -138,7 +142,7 @@ def run_publish(args: argparse.Namespace) -> int:
     except SaseListenError as exc:
         if feed_role(cfg) == "remote" and not args.pending and episode_id:
             _queue_remote_failure(cfg, episode_id, exc)
-        return _print_error(exc, as_json=as_json, prefix="sase-listen publish")
+        return _print_error(exc, as_json=as_json, prefix=invocation.command("publish"))
     if as_json:
         payload: dict[str, object] = {"ok": True, **result}
         if "warnings" not in payload:
@@ -195,7 +199,9 @@ def run_unpublish(args: argparse.Namespace) -> int:
         else:
             result = unpublish_episode(args.episode, cfg)
     except SaseListenError as exc:
-        return _print_error(exc, as_json=as_json, prefix="sase-listen unpublish")
+        return _print_error(
+            exc, as_json=as_json, prefix=invocation.command("unpublish")
+        )
     if as_json:
         print(json.dumps({"ok": True, **result}))
     else:

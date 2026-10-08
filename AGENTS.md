@@ -2,9 +2,11 @@
 
 ## Overview
 
-Standalone CLI (`uv tool install sase-listen`) that turns Markdown into
-chaptered, loudness-normalized MP3 audio editions. No `sase` or `sase-core`
-imports: SASE integration lives in sase-research-artifacts (`#research/audio`)
+CLI that turns Markdown into chaptered, loudness-normalized MP3 audio
+editions. Two installs, one codebase: the standalone `sase-listen` binary
+(`uv tool install sase-listen`) and the `sase listen` command plugin
+(`sase plugin install listen`). Never imports `sase` or `sase-core`:
+SASE integration lives in sase-research-artifacts (`#research/audio`)
 and sase-telegram (`sendAudio`). Rendering audio is not shared domain behavior
 another frontend must match (Rust-boundary litmus test).
 
@@ -64,6 +66,10 @@ forms. To run raw on purpose: `SASE_TOOL_BYPASS='<why>' just check`.
 
 ## No-sase-import rule
 
-Never import `sase` or `sase_core_rs` here, declare no `sase_*` entry points,
-and do not add the `sase--plugin` topic. Ref resolution shells out to
-`sase artifact read` at runtime only.
+Never import `sase` or `sase_core_rs` here. The only `sase_*` entry point is
+`sase_commands` (`listen = "sase_listen.sase_command"` in `pyproject.toml`),
+and the repo carries the `sase--plugin` topic. The adapter module
+(`src/sase_listen/sase_command.py`) imports only stdlib at module top;
+user-facing command suggestions route through `sase_listen/invocation.py`
+so they name the invoked binary (`sase-listen` or `sase listen`). Ref
+resolution shells out to `sase artifact read` at runtime only.

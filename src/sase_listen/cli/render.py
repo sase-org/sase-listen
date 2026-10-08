@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from sase_listen import invocation
 from sase_listen.cli.progress import (
     LiveProgress,
     ProgressState,
@@ -38,17 +39,22 @@ from sase_listen.ui import GLYPH_AUDIO, approx_cost, format_duration
 
 def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    prog: str = "sase-listen",
 ) -> argparse.ArgumentParser:
     """Register the render parser."""
     p = sub.add_parser("render", help="Render a source into an MP3 episode.")
-    p.add_argument(
+    source_action = p.add_argument(
         "source",
         help=(
             "Narration script, Markdown file, PDF file, kind:path ref, or http(s) URL"
         ),
     )
+    invocation.mark_path_completion(source_action)
     cover_group = p.add_mutually_exclusive_group()
-    cover_group.add_argument("--cover", default="", help="Cover image path.")
+    cover_action = cover_group.add_argument(
+        "--cover", default="", help="Cover image path."
+    )
+    invocation.mark_path_completion(cover_action)
     cover_group.add_argument(
         "-g",
         "--generated-cover",
@@ -66,19 +72,23 @@ def add_parser(
     p.add_argument(
         "--force", action="store_true", help="Render despite structural lint errors."
     )
-    p.add_argument(
+    html_action = p.add_argument(
         "-H",
         "--html",
         default="",
         metavar="FILE",
         help="Use a saved browser page (HTML or PDF) instead of fetching the URL.",
     )
+    invocation.mark_path_completion(html_action)
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.add_argument("-n", "--narrator", default="", help="Narrator profile name.")
     p.add_argument("--no-cache", action="store_true", help="Bypass the chunk cache.")
     pub = p.add_mutually_exclusive_group()
     pub.add_argument("--no-publish", dest="publish", action="store_false")
-    p.add_argument("-o", "--output", default="", help="Copy the MP3 to PATH.")
+    output_action = p.add_argument(
+        "-o", "--output", default="", help="Copy the MP3 to PATH."
+    )
+    invocation.mark_path_completion(output_action)
     pub.add_argument("--publish", dest="publish", action="store_true", default=None)
     pub.set_defaults(publish=None)
     p.add_argument(
@@ -96,8 +106,8 @@ def add_parser(
     p.add_argument("--voice", default="", help="Override the narrator voice.")
     p.set_defaults(func=run)
     p.epilog = (
-        "Example: sase-listen render https://example.com/article -e full\n"
-        "Example: sase-listen render https://arxiv.org/abs/2608.25174 -e full"
+        f"Example: {prog} render https://example.com/article -e full\n"
+        f"Example: {prog} render https://arxiv.org/abs/2608.25174 -e full"
     )
     return p
 
@@ -281,8 +291,9 @@ def _print_result(
         else:
             console.print("  Published to the local feed.")
     elif result.publish_queued:
+        pending = invocation.command("publish", "--pending")
         console.print(
-            "  \u26a0 Publish queued \u2014 run sase-listen publish --pending",
+            f"  \u26a0 Publish queued \u2014 run {pending}",
             style="yellow",
         )
     if output:
@@ -317,9 +328,9 @@ def _failure_lines(
                 break
     lines: list[str] = []
     if kind == "interrupt":
-        head = "\u25a0 sase-listen render interrupted"
+        head = f"\u25a0 {invocation.command('render')} interrupted"
     else:
-        head = "\u2717 sase-listen render failed"
+        head = f"\u2717 {invocation.command('render')} failed"
     if stage:
         head += f" during {_stage_label(stage, source)}"
     head += f" (exit {code})"
@@ -353,7 +364,7 @@ def _hint_lines(
         if episode:
             return [
                 "The episode is saved in your library; publish it with "
-                f"`sase-listen publish {episode}`."
+                f"`{invocation.command('publish', episode)}`."
             ]
         return ["The episode is saved in your library; publish it when ready."]
     if stage == Stage.WRITE.value:

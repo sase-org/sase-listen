@@ -32,7 +32,7 @@ from xml.sax.saxutils import escape
 
 import yaml
 
-from sase_listen import __version__
+from sase_listen import __version__, invocation
 from sase_listen.audio.cover import generate_title_card
 from sase_listen.buildinfo import current as _current_build
 from sase_listen.config import SaseListenConfig, load_config
@@ -103,19 +103,25 @@ def resolve_token(cfg: SaseListenConfig) -> str:
             raise SaseListenError(
                 "No feed token: token_command failed to run.",
                 ExitCode.CONFIG,
-                hint="Check feed.token_command, or run `sase-listen feed init`.",
+                hint=(
+                    "Check feed.token_command, or run"
+                    f" `{invocation.command('feed', 'init')}`."
+                ),
             ) from exc
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.splitlines()[0].strip()
         raise SaseListenError(
             "No feed token: token_command produced no token.",
             ExitCode.CONFIG,
-            hint="Check feed.token_command, or run `sase-listen feed init`.",
+            hint=(
+                "Check feed.token_command, or run"
+                f" `{invocation.command('feed', 'init')}`."
+            ),
         )
     raise SaseListenError(
         "No feed token is configured.",
         ExitCode.CONFIG,
-        hint="Run `sase-listen feed init --base-url URL` first.",
+        hint=f"Run `{invocation.command('feed', 'init')} --base-url URL` first.",
     )
 
 
@@ -136,7 +142,7 @@ def require_base_url(cfg: SaseListenConfig) -> str:
         raise SaseListenError(
             "No feed base_url is configured.",
             ExitCode.CONFIG,
-            hint="Run `sase-listen feed init --base-url URL` first.",
+            hint=f"Run `{invocation.command('feed', 'init')} --base-url URL` first.",
         )
     return base
 
@@ -607,7 +613,7 @@ def resolve_episode_ref(
             raise SaseListenError(
                 "The library has no episodes yet.",
                 ExitCode.USAGE,
-                hint="Render one first with `sase-listen render`.",
+                hint=f"Render one first with `{invocation.command('render')}`.",
             )
         by_time = sorted(
             ids,
@@ -733,7 +739,7 @@ def unpublish_episode(
             raise SaseListenError(
                 f"Episode '{episode_id}' is not published.",
                 ExitCode.USAGE,
-                hint="Check the id with `sase-listen feed`.",
+                hint=f"Check the id with `{invocation.command('feed')}`.",
             )
         shutil.rmtree(target)
         rebuilt = rebuild_feed(cfg, root=feed_dir)
@@ -758,7 +764,10 @@ def init_feed(
         raise SaseListenError(
             "A --base-url is required.",
             ExitCode.USAGE,
-            hint="Example: sase-listen feed init --base-url https://host:8443",
+            hint=(
+                "Example:"
+                f" {invocation.command('feed', 'init')} --base-url https://host:8443"
+            ),
         )
     try:
         existing = resolve_token(cfg)

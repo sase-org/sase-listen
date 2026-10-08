@@ -2,7 +2,7 @@
 
 This guide ships with the `sase-listen` package so the rules never drift from
 the code that enforces them. Follow it exactly, then run
-`sase-listen lint <script> --source <report>` until it is clean.
+`{{ prog }} lint <script> --source <report>` until it is clean.
 
 ## Who the listener is
 
@@ -52,7 +52,7 @@ Rules:
   `source_blob`.
 - `cover` is optional explicitly chosen artwork, relative to the script file.
   Omit it to use the generated title card. Research audio renders with
-  `sase-listen render <script> --generated-cover`, which generates the title
+  `{{ prog }} render <script> --generated-cover`, which generates the title
   card and ignores `cover` frontmatter and any sibling `<stem>_infographic.png`.
 
 ## Shape
@@ -134,9 +134,9 @@ split in two.
 
 ## Final step
 
-Run `sase-listen lint <script> --source <report>` and fix every finding.
+Run `{{ prog }} lint <script> --source <report>` and fix every finding.
 Repeat until clean:
 
 ```bash
-sase-listen lint one_updates_tab_narration.md --source report.md
+{{ prog }} lint one_updates_tab_narration.md --source report.md
 ```

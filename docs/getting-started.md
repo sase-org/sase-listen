@@ -2,11 +2,15 @@
 
 ## Install
 
-`sase-listen` is a standalone tool (not a sase plugin), installed with uv:
+Two installs, one codebase — pick the one that fits:
 
 ```bash
-uv tool install sase-listen
+sase plugin install listen   # sase users: mounts the `sase listen` command
+uv tool install sase-listen  # everyone else: standalone binary on PATH
 ```
+
+The rest of this page uses `sase-listen`; under the plugin, read it as
+`sase listen`.
 
 Requirements: Python 3.12+, and `ffmpeg` — or nothing at all, since the
 bundled `imageio-ffmpeg` binary is used automatically when no system ffmpeg

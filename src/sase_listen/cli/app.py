@@ -58,10 +58,10 @@ class _VersionAction(argparse.Action):
         parser.exit()
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the top-level parser."""
+def build_parser(prog: str = "sase-listen") -> argparse.ArgumentParser:
+    """Build the top-level parser (side-effect free)."""
     parser = argparse.ArgumentParser(
-        prog="sase-listen",
+        prog=prog,
         description=(
             "Turn Markdown into chaptered, loudness-normalized MP3 audio editions.\n"
             "Render research reports for the commute, then listen in Telegram or a\n"
@@ -72,13 +72,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action=_VersionAction, nargs=0)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     for mod in _COMMAND_MODULES:
-        mod.add_parser(sub)
+        mod.add_parser(sub, prog=prog)
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point for the `sase-listen` console script."""
-    parser = build_parser()
+def main(argv: Sequence[str] | None = None, *, prog: str = "sase-listen") -> int:
+    """Entry point for the `sase-listen` console script and `sase listen`."""
+    from sase_listen.invocation import set_display_prog
+
+    set_display_prog(prog)
+    parser = build_parser(prog=prog)
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):
         parser.print_help()

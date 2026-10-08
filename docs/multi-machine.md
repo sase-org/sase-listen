@@ -46,6 +46,7 @@ Every machine runs its own copy, and the host runs `feed receive`.
   355e649); this machine runs 0.1.1 (editable @ 3ae7310) — run
   `sase-listen doctor`.
 - Upgrade commands per install kind:
+  - inside the sase tool environment: `sase plugin update listen`.
   - editable uv tool install:
     `git -C <checkout> pull --ff-only && uv tool upgrade --reinstall
     sase-listen` (`~/.local/bin/uv` over non-interactive SSH).
@@ -65,6 +66,8 @@ On every machine that should publish:
 1. Install sase-listen (`uv tool install sase-listen`, or
    `~/.local/bin/uv tool install --force git+https://github.com/sase-org/sase-listen`
    over non-interactive SSH, where `~/.local/bin` is not on `PATH`).
+   Sase users can install the plugin instead (`sase plugin install listen`);
+   the remote shell tries the standalone binary first, then `sase listen`.
 2. Credentials: `pass show gemini_cli_api_key` (or
    `SASE_LISTEN_GEMINI_API_KEY`) on the renderer; the feed token stays
    on the host (`pass show sase_listen_feed_token` or `feed.token`).

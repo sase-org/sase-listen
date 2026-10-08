@@ -74,6 +74,10 @@ class BuildInfo:
         """One copy-pasteable repair command for this install."""
         receipt = Path(sys.prefix) / "uv-receipt.toml"
         if receipt.is_file():
+            if _receipt_first_requirement(receipt) == "sase":
+                # This interpreter is the sase tool environment with listen
+                # installed as a plugin: repair it through the plugin manager.
+                return "sase plugin update listen"
             uv = shutil.which("uv") or "uv"
             if self.install == "editable" and self.source:
                 quoted = shlex.quote(self.source)
@@ -190,6 +194,35 @@ def _git_output(source_path: str, args: list[str]) -> str:
 
 def _normalize_name(name: str) -> str:
     return _NORMALIZE_RE.sub("-", name).lower()
+
+
+def _receipt_first_requirement(receipt: Path) -> str:
+    """Return the normalized first requirement name in a uv receipt."""
+    try:
+        text = receipt.read_bytes()
+    except Exception:
+        return ""
+    try:
+        data = tomllib.loads(text.decode("utf-8"))
+    except Exception:
+        return ""
+    try:
+        tool = data.get("tool")
+        requirements = tool.get("requirements") if isinstance(tool, dict) else None
+    except Exception:
+        return ""
+    if not isinstance(requirements, list) or not requirements:
+        return ""
+    first = requirements[0]
+    if isinstance(first, dict):
+        name = first.get("name")
+    elif isinstance(first, str):
+        name = first
+    else:
+        return ""
+    if not isinstance(name, str) or not name.strip():
+        return ""
+    return _normalize_name(name.strip())
 
 
 def _missing_deps(source_path: str) -> tuple[str, ...]:

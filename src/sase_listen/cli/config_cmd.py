@@ -10,7 +10,7 @@ from sase_listen.errors import ExitCode
 from sase_listen.paths import config_path
 
 _STARTER = """\
-# sase-listen config. Run `sase-listen config` to see origins.
+# sase-listen config. Run `{prog} config` to see origins.
 # Secrets: prefer SASE_LISTEN_GEMINI_API_KEY / SASE_LISTEN_OPENAI_API_KEY env,
 # or engines.gemini.api_key_command like `pass show gemini_cli_api_key`.
 narrator: gemini
@@ -53,13 +53,14 @@ feed:
 
 def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    prog: str = "sase-listen",
 ) -> argparse.ArgumentParser:
     """Register the config parser."""
     p = sub.add_parser("config", help="Show effective config or write a starter file.")
     p.add_argument("action", nargs="?", default="", choices=["", "init", "path"])
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen config init"
+    p.epilog = f"Example: {prog} config init"
     return p
 
 
@@ -73,12 +74,16 @@ def run(args: argparse.Namespace) -> int:
             print(str(config_path()))
         return int(ExitCode.OK)
     if action == "init":
+        from sase_listen import invocation
+
         target = config_path()
         if target.exists():
             print(f"Refusing to overwrite existing config: {target}")
             return int(ExitCode.USAGE)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(_STARTER, encoding="utf-8")
+        target.write_text(
+            _STARTER.format(prog=invocation.display_prog()), encoding="utf-8"
+        )
         print(str(target))
         return int(ExitCode.OK)
     try:

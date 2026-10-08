@@ -79,9 +79,20 @@ if kind == "exec":
         env[key] = val
     env["SASE_LISTEN_REMOTE_CALL"] = "1"
     env["SASE_LISTEN_FEED_HOST"] = ""
-    marker = "sase-listen"
-    idx = cmd.find(marker)
-    rest = cmd[idx + len(marker) :].strip() if idx >= 0 else ""
+    # The remote shell prefers `sase-listen`, then `sase listen`.
+    if entry.get("form", "standalone") == "plugin":
+        # Simulate a plugin-only host: drop the standalone branch so the
+        # harness must parse the `exec sase listen ...` fallback.
+        _head, sep, tail = cmd.partition("exec sase-listen ")
+        if sep:
+            _branch, _, after = tail.partition(";")
+            cmd = _head + after
+    rest = ""
+    for marker in ("exec sase-listen ", "exec sase listen "):
+        idx = cmd.find(marker)
+        if idx >= 0:
+            rest = cmd[idx + len(marker) :].split(";")[0].strip()
+            break
     args = shlex.split(rest)
     py = entry.get("python", sys.executable)
     blob = sys.stdin.buffer.read()
@@ -167,7 +178,10 @@ def test_ssh_argv_and_destinations() -> None:
     cmd = argv[-1]
     assert "SASE_LISTEN_REMOTE_CALL=1" in cmd
     assert "$HOME/.local/bin" in cmd
-    assert "sase-listen feed receive ep-1 --json" in cmd
+    assert "exec sase-listen feed receive ep-1 --json" in cmd
+    assert "exec sase listen feed receive ep-1 --json" in cmd
+    assert "exit 127" in cmd
+    assert "sase-listen: not installed" in cmd
 
 
 def test_pack_receive_round_trip(isolated: Path, tmp_path: Path) -> None:
@@ -315,6 +329,85 @@ def test_run_remote_fallback_error_and_too_old(
     cfg.feed.host_ssh = ["down"]
     with pytest.raises(FeedHostUnreachable, match="tried down"):
         run_remote(cfg, ["feed"])
+
+
+def test_run_remote_missing_remote_maps_127(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = default_config()
+    cfg.feed.host = "apollo"
+    cfg.feed.host_ssh = ["bare"]
+    _install_fake_ssh(
+        tmp_path,
+        monkeypatch,
+        {
+            "bare": {
+                "kind": "json",
+                "exit": 127,
+                "stdout": "",
+                "stderr": "sase-listen: not installed",
+            },
+        },
+    )
+    with pytest.raises(SaseListenError, match="not installed on apollo") as caught:
+        run_remote(cfg, ["feed", "receive", "ep-1"])
+    assert "sase plugin install listen" in caught.value.hint
+    assert caught.value.code == ExitCode.UNEXPECTED
+
+
+def test_too_old_detection_requires_receive_choice(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = default_config()
+    cfg.feed.host = "apollo"
+    cfg.feed.host_ssh = ["other"]
+    _install_fake_ssh(
+        tmp_path,
+        monkeypatch,
+        {
+            "other": {
+                "kind": "json",
+                "exit": 2,
+                "stdout": "",
+                "stderr": (
+                    "sase-listen: error: argument action: invalid choice: 'prune'"
+                ),
+            },
+        },
+    )
+    # Any `invalid choice` no longer matches: only 'receive' means too old.
+    with pytest.raises(SaseListenError, match="remote command failed") as caught:
+        run_remote(cfg, ["feed", "receive", "ep-1"])
+    assert "too old" not in str(caught.value)
+
+
+def test_exec_harness_runs_both_remote_forms(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = default_config()
+    cfg.feed.host = "apollo"
+    cfg.feed.host_ssh = ["apollo"]
+    _install_fake_ssh(
+        tmp_path, monkeypatch, {"apollo": {"kind": "exec", "python": sys.executable}}
+    )
+    payload, dest = run_remote(cfg, ["feed"])
+    assert dest == "apollo"
+    assert payload["ok"] is True
+
+    _install_fake_ssh(
+        tmp_path,
+        monkeypatch,
+        {
+            "apollo": {
+                "kind": "exec",
+                "form": "plugin",
+                "python": sys.executable,
+            }
+        },
+    )
+    payload, dest = run_remote(cfg, ["feed"])
+    assert dest == "apollo"
+    assert payload["ok"] is True
 
 
 STUB_SSH_ADD = r"""#!/usr/bin/env python3

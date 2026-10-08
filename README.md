@@ -15,6 +15,9 @@ sase-listen doctor
 sase-listen render report_narration.md -o episode.mp3
 ```
 
+Sase users can skip the standalone binary: `sase plugin install listen`
+mounts the same CLI as `sase listen`.
+
 Each episode is a mono 24 kHz, 64 kb/s MP3 at −16 LUFS with one ID3 chapter
 per `##` heading, an embedded cover, and a spoken AI-disclosure intro. Episodes
 reach your phone through Telegram's music player or a private podcast feed for

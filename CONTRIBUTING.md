@@ -25,7 +25,7 @@ just docs-build        # mkdocs build --strict
 - **Docs live with the code.** Every behavior change updates its docs page
   and this site builds with `mkdocs build --strict` — no dead links, no
   unlisted pages.
-- **No `sase` imports.** This is a standalone tool; SASE integration lives in
-  `sase-research-artifacts` and `sase-telegram` and is reached only by
-  shelling out at runtime.
+- **No `sase` imports.** The only `sase_*` entry point is `sase_commands`;
+  SASE integration lives in `sase-research-artifacts` and `sase-telegram`
+  and is reached only by shelling out at runtime.
 - **Agent instructions** for working in this repo are in `AGENTS.md`.

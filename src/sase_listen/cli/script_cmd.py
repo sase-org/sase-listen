@@ -10,6 +10,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from sase_listen import invocation
 from sase_listen.cli.progress import (
     LiveProgress,
     build_progress,
@@ -35,13 +36,15 @@ class _Interrupted(Exception):
 
 def add_parser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    prog: str = "sase-listen",
 ) -> argparse.ArgumentParser:
     """Register the script parser."""
     p = sub.add_parser("script", help="Create a deterministic narration script.")
-    p.add_argument(
+    source_action = p.add_argument(
         "source",
         help="Markdown file, PDF file, or http(s) article URL to normalize.",
     )
+    invocation.mark_path_completion(source_action)
     p.add_argument(
         "-e",
         "--edition",
@@ -49,15 +52,19 @@ def add_parser(
         default=None,
         help="Article edition to create (URL default: brief).",
     )
-    p.add_argument(
+    html_action = p.add_argument(
         "-H",
         "--html",
         default="",
         metavar="FILE",
         help="Use a saved browser page (HTML or PDF) instead of fetching the URL.",
     )
+    invocation.mark_path_completion(html_action)
     p.add_argument("--json", action="store_true", help="Emit one JSON object.")
-    p.add_argument("-o", "--output", default="", help="Write the script to PATH.")
+    output_action = p.add_argument(
+        "-o", "--output", default="", help="Write the script to PATH."
+    )
+    invocation.mark_path_completion(output_action)
     p.add_argument(
         "--progress",
         choices=("auto", "live", "plain", "off"),
@@ -71,7 +78,7 @@ def add_parser(
         help="Fetch the URL again and replace the cached source.",
     )
     p.set_defaults(func=run)
-    p.epilog = "Example: sase-listen script https://example.com/article -e brief --json"
+    p.epilog = f"Example: {prog} script https://example.com/article -e brief --json"
     return p
 
 
@@ -132,7 +139,10 @@ def _load_url_source(args: argparse.Namespace) -> LoadedSource:
                 )
             )
         else:
-            print("\u25a0 sase-listen script interrupted (exit 130)", file=sys.stderr)
+            print(
+                f"\u25a0 {invocation.command('script')} interrupted (exit 130)",
+                file=sys.stderr,
+            )
         raise _Interrupted from None
 
 
@@ -158,7 +168,7 @@ def run(args: argparse.Namespace) -> int:
                     )
                 )
             else:
-                print(f"sase-listen script: error: {exc}", file=sys.stderr)
+                print(f"{invocation.command('script')}: error: {exc}", file=sys.stderr)
                 if exc.hint:
                     print(f"hint: {exc.hint}", file=sys.stderr)
             return int(exc.code)
@@ -209,7 +219,7 @@ def run(args: argparse.Namespace) -> int:
 
     if args.edition in {"brief", "full"}:
         print(
-            "sase-listen script: error: generated brief and full editions "
+            f"{invocation.command('script')}: error: generated brief and full editions "
             "are available for article URLs and PDF files only.",
             file=sys.stderr,
         )
@@ -221,7 +231,10 @@ def run(args: argparse.Namespace) -> int:
 
     source_path = Path(args.source)
     if not source_path.exists():
-        print(f"sase-listen script: file not found: {source_path}", file=sys.stderr)
+        print(
+            f"{invocation.command('script')}: file not found: {source_path}",
+            file=sys.stderr,
+        )
         return int(ExitCode.USAGE)
     source_text = source_path.read_text(encoding="utf-8")
     script_md, omissions = normalize_markdown(source_text, filename=source_path.name)

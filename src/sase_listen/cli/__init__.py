@@ -14,16 +14,16 @@ def _is_sase_listen_import(exc: ImportError) -> bool:
     )
 
 
-def _stale_message(exc: ImportError) -> str:
+def _stale_message(exc: ImportError, prog: str) -> str:
     text = str(exc) or ""
     if text.startswith("cannot import name"):
         return (
-            f"sase-listen {text}: this installation's Python environment"
+            f"{prog} {text}: this installation's Python environment"
             " is out of date with its code"
         )
     module = getattr(exc, "name", None) or "unknown"
     return (
-        f"sase-listen cannot import '{module}': this installation's Python"
+        f"{prog} cannot import '{module}': this installation's Python"
         " environment is out of date with its code"
     )
 
@@ -39,18 +39,18 @@ def _upgrade_hint() -> str:
         return "Reinstall: reinstall sase-listen with the installer you used."
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point for the `sase-listen` console script."""
+def main(argv: Sequence[str] | None = None, *, prog: str = "sase-listen") -> int:
+    """Entry point for the `sase-listen` console script and `sase listen`."""
     from sase_listen.errors import ExitCode
 
     try:
         from sase_listen.cli import app as app_mod
 
-        return int(app_mod.main(argv))
+        return int(app_mod.main(argv, prog=prog))
     except ImportError as exc:
         if _is_sase_listen_import(exc):
             raise
-        message = _stale_message(exc)
+        message = _stale_message(exc, prog)
         hint = _upgrade_hint()
         probe = list(sys.argv[1:] if argv is None else argv)
         if "--json" in probe:
@@ -63,7 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
         else:
-            print(f"sase-listen: error: {message}", file=sys.stderr)
+            print(f"{prog}: error: {message}", file=sys.stderr)
             if hint:
                 print(f"hint: {hint}", file=sys.stderr)
         return int(ExitCode.CONFIG)
