@@ -34,7 +34,7 @@ jobs:
           uv python install 3.12
           uv venv --python 3.12 .venv
       - name: Install dependencies
-        run: just install
+        run: just install-venv
       - name: Build docs
         run: just docs-build
       - uses: actions/configure-pages@v5

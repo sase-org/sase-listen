@@ -6,8 +6,16 @@ venv_bin := repo_dir / ".venv" / "bin"
 default:
     @just --list
 
-install:
+[group('install')]
+[doc("Sync this checkout's .venv for tests and lint")]
+install-venv:
     uv sync --locked --all-groups
+
+# Private alias kept for one release; remove after the next release.
+[private]
+install:
+    @echo '`just install` is now `just install-venv`' >&2
+    @just install-venv
 
 fmt:
     {{ venv_bin }}/ruff format src/ tests/

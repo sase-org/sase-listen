@@ -13,7 +13,7 @@ another frontend must match (Rust-boundary litmus test).
 ## Build & Run
 
 ```bash
-just install    # uv sync --locked --all-groups
+just install-venv    # uv sync --locked --all-groups
 just lint       # ruff check + format --check + mypy --strict + codespell
 just fmt        # ruff format + fix
 just test       # pytest

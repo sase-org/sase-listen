@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-just install    # uv sync --locked --all-groups
+just install-venv    # uv sync --locked --all-groups
 ```
 
 ## Checks
