@@ -7,6 +7,14 @@
   "include-component-in-tag": false,
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
+  "always-update": true,
+  "extra-files": [
+    {
+      "type": "toml",
+      "path": "uv.lock",
+      "jsonpath": "$.package[?(@.name.value=='sase-listen')].version"
+    }
+  ],
   "packages": {
     ".": {
       "component": "sase-listen"
