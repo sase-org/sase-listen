@@ -629,9 +629,18 @@ def payload_version_fallback(remote: dict[str, Any]) -> str:
 
 
 def flush_pending(
-    cfg: SaseListenConfig, *, on_step: Callable[[str], None] | None = None
+    cfg: SaseListenConfig,
+    *,
+    library: Path | None = None,
+    on_step: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Retry every queued publish. Returns published and failed lists."""
+    """Retry every queued publish. Returns published and failed lists.
+
+    A successful retry also flips the source library manifest's
+    ``published`` flag. When the manifest cannot be marked, the episode
+    stays queued with the mark error so a delivered entry is never
+    dropped silently.
+    """
     published: list[str] = []
     failed: list[dict[str, str]] = []
     queued = [
@@ -645,13 +654,23 @@ def flush_pending(
         if on_step is not None:
             on_step(f"sending queued episode {position} of {len(queued)}")
         try:
-            _push_episode(episode_id, cfg)
+            _push_episode(episode_id, cfg, library=library)
         except SaseListenError as exc:
             queue_publish(episode_id, str(exc))
             failed.append({"episode_id": episode_id, "error": str(exc)})
         else:
-            _drop_outbox(episode_id)
-            published.append(episode_id)
+            try:
+                mark_manifest_published(episode_id, library)
+            except (OSError, ValueError) as exc:
+                message = (
+                    "delivered but the source manifest "
+                    f"could not be marked published: {exc}"
+                )
+                queue_publish(episode_id, message)
+                failed.append({"episode_id": episode_id, "error": message})
+            else:
+                _drop_outbox(episode_id)
+                published.append(episode_id)
     return {"published": published, "failed": failed}
 
 
@@ -670,7 +689,7 @@ def publish_any(
     refuse_if_misrouted(cfg)
     if feed_role(cfg) == "remote":
         with contextlib.suppress(SaseListenError):
-            flush_pending(cfg, on_step=on_step)
+            flush_pending(cfg, library=library, on_step=on_step)
         if on_step is not None:
             on_step("packing the episode")
         host = cfg.feed.host.strip()

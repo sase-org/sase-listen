@@ -778,6 +778,95 @@ def test_publish_masks_item_url_unless_show_url(
     assert "cli-token-xyz" in shown["item_url"]
 
 
+def test_flush_pending_marks_manifest_published(isolated: Path, tmp_path: Path) -> None:
+    from sase_listen.library import read_manifest
+
+    cfg, _feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-flush-ok-111111")
+    _write_library_episode(lib_dir, "ep-flush-ok-222222")
+    queue_publish("ep-flush-ok-111111", "ssh: down")
+    queue_publish("ep-flush-ok-222222", "ssh: down")
+    assert read_manifest("ep-flush-ok-111111", lib_dir)["published"] is False
+
+    result = flush_pending(cfg, library=lib_dir)
+
+    assert result == {
+        "published": ["ep-flush-ok-111111", "ep-flush-ok-222222"],
+        "failed": [],
+    }
+    assert pending_publishes() == []
+    assert read_manifest("ep-flush-ok-111111", lib_dir)["published"] is True
+    assert read_manifest("ep-flush-ok-222222", lib_dir)["published"] is True
+
+    # A second flush is a no-op: nothing is left to retry.
+    assert flush_pending(cfg, library=lib_dir) == {"published": [], "failed": []}
+
+
+def test_flush_pending_failure_keeps_outbox_and_manifest(
+    isolated: Path, tmp_path: Path
+) -> None:
+    from sase_listen.library import read_manifest
+
+    cfg, _feed_dir, lib_dir = _feed_config(tmp_path)
+    src = _write_library_episode(lib_dir, "ep-flush-bad-333333")
+    (src / "test-episode.mp3").unlink()
+    queue_publish("ep-flush-bad-333333", "ssh: down")
+
+    result = flush_pending(cfg, library=lib_dir)
+
+    assert result["published"] == []
+    assert [item["episode_id"] for item in result["failed"]] == ["ep-flush-bad-333333"]
+    assert [entry["episode_id"] for entry in pending_publishes()] == [
+        "ep-flush-bad-333333"
+    ]
+    assert read_manifest("ep-flush-bad-333333", lib_dir)["published"] is False
+
+
+def test_flush_pending_mixed_batch(isolated: Path, tmp_path: Path) -> None:
+    from sase_listen.library import read_manifest
+
+    cfg, _feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-flush-mix-ok")
+    bad = _write_library_episode(lib_dir, "ep-flush-mix-bad")
+    (bad / "test-episode.mp3").unlink()
+    queue_publish("ep-flush-mix-bad", "ssh: down")
+    queue_publish("ep-flush-mix-ok", "ssh: down")
+
+    result = flush_pending(cfg, library=lib_dir)
+
+    assert result["published"] == ["ep-flush-mix-ok"]
+    assert [item["episode_id"] for item in result["failed"]] == ["ep-flush-mix-bad"]
+    assert [entry["episode_id"] for entry in pending_publishes()] == [
+        "ep-flush-mix-bad"
+    ]
+    assert read_manifest("ep-flush-mix-ok", lib_dir)["published"] is True
+    assert read_manifest("ep-flush-mix-bad", lib_dir)["published"] is False
+
+
+def test_flush_pending_manifest_mark_failure_stays_queued(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sase_listen.library import read_manifest
+
+    cfg, _feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-flush-mark-444444")
+    queue_publish("ep-flush-mark-444444", "ssh: down")
+
+    def _boom(episode_id: str, library: Path | None = None) -> None:
+        raise OSError("manifest unwritable")
+
+    monkeypatch.setattr("sase_listen.feedhost.mark_manifest_published", _boom)
+
+    result = flush_pending(cfg, library=lib_dir)
+
+    assert result["published"] == []
+    assert [item["episode_id"] for item in result["failed"]] == ["ep-flush-mark-444444"]
+    assert [entry["episode_id"] for entry in pending_publishes()] == [
+        "ep-flush-mark-444444"
+    ]
+    assert read_manifest("ep-flush-mark-444444", lib_dir)["published"] is False
+
+
 def test_feed_status_remote_via_is_ssh_destination(
     isolated: Path,
     tmp_path: Path,

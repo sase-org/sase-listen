@@ -93,7 +93,10 @@ If the host is unreachable, `publish` queues the episode under
 `$XDG_STATE_HOME/sase-listen/outbox/` and exits 1 with the hint
 `sase-listen publish --pending`. Auto-publish on `render` does the same
 without changing the exit code: it warns and leaves `publish_queued:
-true`. Retry with `sase-listen publish --pending`.
+true`. Retry with `sase-listen publish --pending`. Each successful
+retry also flips the source library manifest's `published` flag; a
+retry that cannot mark the manifest keeps the outbox entry and reports
+the mark error instead of dropping it.
 
 ## Upgrade order
 
