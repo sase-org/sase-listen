@@ -674,6 +674,32 @@ def flush_pending(
     return {"published": published, "failed": failed}
 
 
+def _mark_published_or_raise(
+    episode_id: str, cfg: SaseListenConfig, library: Path | None
+) -> None:
+    """Flip the source manifest after a successful explicit publish.
+
+    A delivered episode whose manifest cannot be marked is never dropped
+    silently: raise a reportable error so the CLI prints it (human and
+    JSON). The remote path queues an outbox entry that ``publish --pending``
+    retries; a local publish is repaired by rerunning it.
+    """
+    try:
+        mark_manifest_published(episode_id, library)
+    except (OSError, ValueError) as exc:
+        message = (
+            f"delivered but the source manifest could not be marked published: {exc}"
+        )
+        if feed_role(cfg) == "remote":
+            hint = pending_hint()
+        else:
+            hint = (
+                f"rerun `{invocation.command('publish')} {episode_id}` "
+                "once the manifest is writable"
+            )
+        raise SaseListenError(message, ExitCode.UNEXPECTED, hint=hint) from exc
+
+
 def publish_any(
     episode_id: str,
     cfg: SaseListenConfig,
@@ -685,6 +711,9 @@ def publish_any(
     """Publish locally or stream the episode to the feed host.
 
     Remote role: best-effort flush of the outbox, then pack and receive.
+    A successful publish in either role also flips the source library
+    manifest's ``published`` flag; a delivery failure leaves it false, and
+    a mark failure raises instead of dropping the episode silently.
     """
     refuse_if_misrouted(cfg)
     if feed_role(cfg) == "remote":
@@ -715,7 +744,10 @@ def publish_any(
                 payload["warnings"] = [*existing, warning]
             else:
                 payload["warnings"] = [warning]
+        _mark_published_or_raise(episode_id, cfg, library)
         return payload
     if on_step is not None:
         on_step("updating the feed")
-    return _push_episode(episode_id, cfg, library=library, show_url=show_url)
+    result = _push_episode(episode_id, cfg, library=library, show_url=show_url)
+    _mark_published_or_raise(episode_id, cfg, library)
+    return result

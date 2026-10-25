@@ -67,7 +67,7 @@ from sase_listen.engines.tone import ToneEngine
 from sase_listen.errors import ExitCode, SaseListenError
 from sase_listen.events import RenderEvents as RenderEvents
 from sase_listen.events import Stage
-from sase_listen.feed import mark_manifest_published, replacement_notice
+from sase_listen.feed import replacement_notice
 from sase_listen.feedhost import (
     PENDING_HINT,
     feed_role,
@@ -2459,7 +2459,7 @@ def render(
                     Stage.PUBLISH.value, f"skipped · {exc}", warning=True
                 )
         else:
-            mark_manifest_published(plan.episode_id, library_root)
+            # publish_any already flipped the source manifest flag.
             published = True
             publish_host = str(published_info.get("host") or "")
             via = str(published_info.get("via") or "")

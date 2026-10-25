@@ -867,6 +867,193 @@ def test_flush_pending_manifest_mark_failure_stays_queued(
     assert read_manifest("ep-flush-mark-444444", lib_dir)["published"] is False
 
 
+def test_publish_any_local_marks_source_manifest(
+    isolated: Path, tmp_path: Path
+) -> None:
+    from sase_listen.library import read_manifest
+
+    cfg, feed_dir, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-exp-ok-111111")
+    assert read_manifest("ep-exp-ok-111111", lib_dir)["published"] is False
+
+    result = publish_any("ep-exp-ok-111111", cfg, library=lib_dir)
+
+    assert result["episode_id"] == "ep-exp-ok-111111"
+    assert read_manifest("ep-exp-ok-111111", lib_dir)["published"] is True
+    assert [entry.episode_id for entry in list_feed_episodes(feed_dir)] == [
+        "ep-exp-ok-111111"
+    ]
+
+
+def test_publish_any_remote_marks_source_manifest(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sase_listen.feedhost as fh
+    from sase_listen.library import read_manifest
+
+    monkeypatch.setattr("sase_listen.feedhost.local_hostname", lambda: "athena")
+    cfg, _, lib_dir = _feed_config(tmp_path)
+    cfg.feed.host = "apollo"
+    cfg.feed.host_ssh = ["apollo"]
+    _write_library_episode(lib_dir, "ep-exp-remote-222222")
+    assert read_manifest("ep-exp-remote-222222", lib_dir)["published"] is False
+
+    def _remote_ok(*args: Any, **kwargs: Any) -> Any:
+        return ({"ok": True, "episode_id": "ep-exp-remote-222222"}, "apollo")
+
+    monkeypatch.setattr(fh, "run_remote", _remote_ok)
+
+    result = publish_any("ep-exp-remote-222222", cfg, library=lib_dir)
+
+    assert result["via"] == "apollo"
+    assert read_manifest("ep-exp-remote-222222", lib_dir)["published"] is True
+    assert pending_publishes() == []
+
+
+def test_publish_any_delivery_failure_leaves_manifest_false(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sase_listen.feedhost as fh
+    from sase_listen.library import read_manifest
+
+    cfg, _, lib_dir = _feed_config(tmp_path)
+    bad = _write_library_episode(lib_dir, "ep-exp-bad-333333")
+    (bad / "test-episode.mp3").unlink()
+    with pytest.raises(SaseListenError, match="has no MP3"):
+        publish_any("ep-exp-bad-333333", cfg, library=lib_dir)
+    assert read_manifest("ep-exp-bad-333333", lib_dir)["published"] is False
+    assert pending_publishes() == []
+
+    monkeypatch.setattr("sase_listen.feedhost.local_hostname", lambda: "athena")
+    cfg.feed.host = "apollo"
+    cfg.feed.host_ssh = ["apollo"]
+    _write_library_episode(lib_dir, "ep-exp-unreach-444444")
+
+    def _remote_down(*args: Any, **kwargs: Any) -> Any:
+        raise fh.FeedHostUnreachable(["apollo"], "ssh: down")
+
+    monkeypatch.setattr(fh, "run_remote", _remote_down)
+    with pytest.raises(SaseListenError, match="unreachable"):
+        publish_any("ep-exp-unreach-444444", cfg, library=lib_dir)
+    assert read_manifest("ep-exp-unreach-444444", lib_dir)["published"] is False
+    assert pending_publishes() == []
+
+
+def test_publish_any_mark_failure_raises_without_silencing(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sase_listen.feedhost as fh
+    from sase_listen.library import read_manifest
+
+    cfg, _, lib_dir = _feed_config(tmp_path)
+    _write_library_episode(lib_dir, "ep-exp-mark-555555")
+
+    def _boom(episode_id: str, library: Path | None = None) -> None:
+        raise OSError("manifest unwritable")
+
+    monkeypatch.setattr("sase_listen.feedhost.mark_manifest_published", _boom)
+    with pytest.raises(SaseListenError, match="could not be marked published"):
+        publish_any("ep-exp-mark-555555", cfg, library=lib_dir)
+    assert read_manifest("ep-exp-mark-555555", lib_dir)["published"] is False
+
+    monkeypatch.setattr("sase_listen.feedhost.local_hostname", lambda: "athena")
+    cfg.feed.host = "apollo"
+    cfg.feed.host_ssh = ["apollo"]
+    _write_library_episode(lib_dir, "ep-exp-mark-666666")
+
+    def _remote_ok(*args: Any, **kwargs: Any) -> Any:
+        return ({"ok": True, "episode_id": "ep-exp-mark-666666"}, "apollo")
+
+    monkeypatch.setattr(fh, "run_remote", _remote_ok)
+    with pytest.raises(SaseListenError, match="could not be marked published"):
+        publish_any("ep-exp-mark-666666", cfg, library=lib_dir)
+    assert read_manifest("ep-exp-mark-666666", lib_dir)["published"] is False
+
+
+def test_explicit_publish_cli_marks_manifest(
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sase_listen.library import read_manifest
+    from sase_listen.paths import library_dir
+    from test_feed import _write_feed_config
+
+    _write_feed_config(isolated, tmp_path, monkeypatch)
+    _write_library_episode(library_dir(), "ep-cli-pub-777777")
+    assert main(["publish", "ep-cli-pub-777777"]) == 0
+    assert "Published ep-cli-pub-777777" in capsys.readouterr().out
+    assert read_manifest("ep-cli-pub-777777")["published"] is True
+
+
+def test_explicit_publish_cli_mark_failure_json(
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sase_listen.library import read_manifest
+    from sase_listen.paths import library_dir
+    from test_feed import _write_feed_config
+
+    _write_feed_config(isolated, tmp_path, monkeypatch)
+    _write_library_episode(library_dir(), "ep-cli-mark-888888")
+
+    def _boom(episode_id: str, library: Path | None = None) -> None:
+        raise OSError("manifest unwritable")
+
+    monkeypatch.setattr("sase_listen.feedhost.mark_manifest_published", _boom)
+    assert main(["publish", "ep-cli-mark-888888", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "could not be marked published" in payload["error"]["message"]
+    assert read_manifest("ep-cli-mark-888888")["published"] is False
+
+
+def test_explicit_publish_cli_remote_mark_failure_queues(
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import sase_listen.feedhost as fh
+    from sase_listen.library import read_manifest
+    from sase_listen.paths import library_dir
+
+    monkeypatch.setattr("sase_listen.feedhost.local_hostname", lambda: "athena")
+    cfg_path = tmp_path / "config.yml"
+    cfg_path.write_text(
+        "feed:\n"
+        "  host: apollo\n"
+        "  host_ssh: [apollo]\n"
+        "  base_url: https://example.com:8443\n"
+        "  token: tok\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SASE_LISTEN_CONFIG", str(cfg_path))
+    _write_library_episode(library_dir(), "ep-cli-mark-999999")
+
+    def _remote_ok(*args: Any, **kwargs: Any) -> Any:
+        return ({"ok": True, "episode_id": "ep-cli-mark-999999"}, "apollo")
+
+    monkeypatch.setattr(fh, "run_remote", _remote_ok)
+
+    def _boom(episode_id: str, library: Path | None = None) -> None:
+        raise OSError("manifest unwritable")
+
+    monkeypatch.setattr("sase_listen.feedhost.mark_manifest_published", _boom)
+    assert main(["publish", "ep-cli-mark-999999", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "could not be marked published" in payload["error"]["message"]
+    assert "publish --pending" in payload["error"]["hint"]
+    assert [entry["episode_id"] for entry in pending_publishes()] == [
+        "ep-cli-mark-999999"
+    ]
+    assert read_manifest("ep-cli-mark-999999")["published"] is False
+
+
 def test_feed_status_remote_via_is_ssh_destination(
     isolated: Path,
     tmp_path: Path,
